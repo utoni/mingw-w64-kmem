@@ -1,11 +1,30 @@
 #include <EASTL/finally.h>
-#include <cstdint>
 #include <eastl_compat.hpp>
+#include <except.h>
 
 #include "memory.hpp"
 #include "native.h"
 
 extern "C" {
+NTSTATUS NTAPI WrapperObOpenObjectByPointer(
+    _In_ PVOID obj, _In_ ULONG HandleAttributes,
+    _In_ PACCESS_STATE PassedAccessState, _In_ ACCESS_MASK DesiredAccess,
+    _In_ POBJECT_TYPE objType, _In_ KPROCESSOR_MODE AccessMode,
+    _Out_ PHANDLE Handle);
+
+NTSTATUS NTAPI WrapperZwProtectVirtualMemory(
+    _In_ HANDLE ProcessHandle, _In_ _Out_ PVOID *BaseAddress,
+    _In_ _Out_ PSIZE_T NumberOfBytesToProtect, _In_ ULONG NewAccessProtection,
+    _Out_ PULONG OldAccessProtection);
+
+NTSTATUS NTAPI WrapperMmCopyVirtualMemory(_In_ PEPROCESS SourceProcess,
+                                   _In_ PVOID SourceAddress,
+                                   _In_ PEPROCESS TargetProcess,
+                                   _In_ PVOID TargetAddress,
+                                   _In_ SIZE_T BufferSize,
+                                   _In_ KPROCESSOR_MODE PreviousMode,
+                                   _Out_ PSIZE_T ReturnSize);
+
 NTKERNELAPI
 PPEB NTAPI PsGetProcessPeb(_In_ PEPROCESS Process);
 
@@ -64,26 +83,26 @@ eastl::vector<Process> GetProcesses() {
   return result;
 }
 
-NTSTATUS OpenProcess(_In_ HANDLE pid, _Out_ PEPROCESS *pep, _Out_ HANDLE *obj) {
+NTSTATUS OpenProcess(_In_ HANDLE pid, _Out_ PEPROCESS *pep, _Out_ HANDLE *process) {
   NTSTATUS status = PsLookupProcessByProcessId(pid, pep);
 
   if (NT_SUCCESS(status)) {
-    status = ObOpenObjectByPointer(
-        *pep, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, GENERIC_ALL,
-        *PsProcessType, KernelMode, obj);
+    status = WrapperObOpenObjectByPointer(
+        *pep, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, GENERIC_ALL | PROCESS_ALL_ACCESS,
+        *PsProcessType, KernelMode, process);
   }
 
   return status;
 }
 
-NTSTATUS CloseProcess(_In_ _Out_ PEPROCESS *pep, _In_ _Out_ HANDLE *obj) {
+NTSTATUS CloseProcess(_In_ _Out_ PEPROCESS *pep, _In_ _Out_ HANDLE *process) {
   NTSTATUS status = STATUS_UNSUCCESSFUL;
 
-  if (pep != NULL && obj != NULL) {
+  if (pep != NULL && process != NULL) {
     ObDereferenceObject(*pep);
     *pep = NULL;
-    status = ZwClose(*obj);
-    *obj = NULL;
+    status = ZwClose(*process);
+    *process = NULL;
   }
 
   return status;
@@ -219,4 +238,93 @@ eastl::vector<Module> GetModules(_In_ PEPROCESS Process, _In_ BOOLEAN isWow64) {
   }
 
   return result;
+}
+
+extern "C" int ehandler(_In_ EXCEPTION_POINTERS *ep) {
+  (void)ep;
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+
+NTSTATUS ProtectVirtualMemory(_In_ PEPROCESS pep,
+                              _In_ uint64_t addr,
+                              _In_ SIZE_T size, _In_ ULONG newProt,
+                              _Out_ ULONG *oldProt) {
+  KAPC_STATE apcState;
+  NTSTATUS status;
+  PVOID paddr = (PVOID)addr;
+  SIZE_T psize = size;
+  ULONG prot = 0;
+
+  KeStackAttachProcess((PKPROCESS)pep, &apcState);
+
+  __dpptry(ehandler, pvm) {
+    status =
+        WrapperZwProtectVirtualMemory(ZwCurrentProcess(), &paddr, &psize, newProt, &prot);
+    *oldProt = prot;
+  }
+  __dppexcept(pvm) { status = STATUS_ACCESS_VIOLATION; }
+  __dpptryend(pvm);
+
+  KeUnstackDetachProcess(&apcState);
+
+  return status;
+}
+
+NTSTATUS RestoreProtectVirtualMemory(_In_ PEPROCESS pep, _In_ uint64_t addr,
+                                     _In_ SIZE_T siz, _In_ ULONG old_prot) {
+  KAPC_STATE apcState;
+  NTSTATUS status;
+  PVOID paddr = (PVOID)addr;
+  SIZE_T psize = siz;
+  ULONG prot = 0;
+
+  KeStackAttachProcess((PKPROCESS)pep, &apcState);
+
+  __dpptry(ehandler, rpvm) {
+    status =
+        WrapperZwProtectVirtualMemory(ZwCurrentProcess(), &paddr, &psize, old_prot, &prot);
+  }
+  __dppexcept(rpvm) { status = STATUS_ACCESS_VIOLATION; }
+  __dpptryend(rpvm);
+
+  KeUnstackDetachProcess(&apcState);
+
+  return status;
+}
+
+NTSTATUS ReadVirtualMemory(_In_ PEPROCESS pep, _In_ uint64_t sourceAddress,
+                           _In_ UCHAR *targetAddress, _In_ _Out_ SIZE_T *size) {
+  NTSTATUS status = STATUS_SUCCESS;
+  SIZE_T bytes = 0;
+
+  __dpptry(ehandler, rvm) {
+    status =
+        WrapperMmCopyVirtualMemory(pep, (PVOID)sourceAddress, PsGetCurrentProcess(),
+                            (PVOID)targetAddress, *size, KernelMode, &bytes);
+  }
+  __dppexcept(rvm) { status = STATUS_UNSUCCESSFUL; }
+  __dpptryend(rvm);
+
+  *size = bytes;
+
+  return status;
+}
+
+NTSTATUS WriteVirtualMemory(_In_ PEPROCESS pep, _In_ UCHAR *sourceAddress,
+                            _In_ _Out_ uint64_t targetAddress,
+                            _In_ _Out_ SIZE_T *size) {
+  NTSTATUS status = STATUS_SUCCESS;
+  SIZE_T bytes = 0;
+
+  __dpptry(ehandler, wvm) {
+    status =
+        WrapperMmCopyVirtualMemory(PsGetCurrentProcess(), (PVOID)sourceAddress, pep,
+                            (PVOID)targetAddress, *size, KernelMode, &bytes);
+  }
+  __dppexcept(wvm) { status = STATUS_UNSUCCESSFUL; }
+  __dpptryend(wvm);
+
+  *size = bytes;
+
+  return status;
 }

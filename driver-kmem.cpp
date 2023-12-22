@@ -45,9 +45,109 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
         if (NT_SUCCESS(::OpenProcess(pid, &pep, &obj))) {
           DbgPrint("Opened process with pid 0x%X\n", pid);
           const auto &mods = ::GetModules(pep, FALSE);
-          DbgPrint("Got %zu modules\n", mods.size());
+          DbgPrint("Got %zu modules for '%ws'\n", mods.size(), targetProcess);
           for (const auto &mod : mods) {
             DbgPrint("Module: '%ws'\n", mod.BaseDllName.c_str());
+
+            if (mod.BaseDllName == L"Explorer.EXE") {
+              DbgPrint("Found explorer module, overwriting 'MZ' with 'FU'..\n");
+
+              UCHAR headerBuf[2] = {0xFF, 0xFF};
+              SIZE_T headerOut = sizeof(headerBuf);
+              NTSTATUS ret;
+              ULONG oldProt = 0;
+
+              ret =
+                  ::ReadVirtualMemory(pep, mod.DllBase, headerBuf, &headerOut);
+              if (!NT_SUCCESS(ret)) {
+                DbgPrint("::ReadVirtualMemory failed with: 0x%lX\n", ret);
+              } else {
+                DbgPrint("First two bytes of '%ws': %c%c\n", targetProcess,
+                         headerBuf[0], headerBuf[1]);
+              }
+
+              ret = ::ProtectVirtualMemory(pep, mod.DllBase, 0x2,
+                                           PAGE_READWRITE, &oldProt);
+              if (!NT_SUCCESS(ret)) {
+                DbgPrint("::ProtectVirtualMemory failed with: 0x%lx\n", ret);
+              } else {
+                DbgPrint("Old page protection (DosHeader): %lu\n", oldProt);
+              }
+
+              headerBuf[0] = 0x41;
+              headerBuf[1] = 0x41;
+              headerOut = sizeof(headerBuf);
+              ret =
+                  ::WriteVirtualMemory(pep, headerBuf, mod.DllBase, &headerOut);
+              if (!NT_SUCCESS(ret)) {
+                DbgPrint("::WriteVirtualMemory failed with: 0x%lx\n", ret);
+              }
+
+              ret =
+                  ::RestoreProtectVirtualMemory(pep, mod.DllBase, 0x2, oldProt);
+              if (!NT_SUCCESS(ret)) {
+                DbgPrint("::RestoreProtectVirtualMemory failed with: 0x%lx\n",
+                         ret);
+              }
+
+              headerBuf[0] = 0x00;
+              headerBuf[0] = 0x00;
+              headerOut = sizeof(headerBuf);
+              ret =
+                  ::ReadVirtualMemory(pep, mod.DllBase, headerBuf, &headerOut);
+              if (!NT_SUCCESS(ret)) {
+                DbgPrint("::ReadVirtualMemory failed with: 0x%lX\n", ret);
+              } else {
+                DbgPrint("First two bytes of '%ws': %c%c\n", targetProcess,
+                         headerBuf[0], headerBuf[1]);
+              }
+
+              ret = ::ProtectVirtualMemory(pep, mod.DllBase, 0x2,
+                                           PAGE_READWRITE, &oldProt);
+              if (!NT_SUCCESS(ret)) {
+                DbgPrint("::ProtectVirtualMemory failed with: 0x%lx\n", ret);
+              } else {
+                DbgPrint("Old page protection (DosHeader): %lu\n", oldProt);
+              }
+
+              headerBuf[0] = 'M';
+              headerBuf[1] = 'Z';
+              headerOut = sizeof(headerBuf);
+              ret =
+                  ::WriteVirtualMemory(pep, headerBuf, mod.DllBase, &headerOut);
+              if (!NT_SUCCESS(ret)) {
+                DbgPrint("::WriteVirtualMemory failed with: 0x%lx\n", ret);
+              }
+
+              ret =
+                  ::RestoreProtectVirtualMemory(pep, mod.DllBase, 0x2, oldProt);
+              if (!NT_SUCCESS(ret)) {
+                DbgPrint("::RestoreProtectVirtualMemory failed with: 0x%lx\n",
+                         ret);
+              }
+            }
+
+            {
+              UCHAR headerBuf[4];
+              SIZE_T headerOut = sizeof(headerBuf);
+              NTSTATUS headerStatus =
+                  ::ReadVirtualMemory(pep, mod.DllBase, headerBuf, &headerOut);
+              if (!NT_SUCCESS(headerStatus) || headerOut != sizeof(headerBuf)) {
+                DbgPrint(
+                    "Could not read the first 4 bytes of the image, got %zu "
+                    "bytes: 0x%X\n",
+                    headerOut, headerStatus);
+              } else {
+                if (headerBuf[0] != 0x4D || headerBuf[1] != 0x5A ||
+                    headerBuf[2] != 0x90 || headerBuf[3] != 0x00) {
+                  DbgPrint("Strange, image does not seem to be a PE, first 4 "
+                           "bytes: %c%c 0x%X 0x%X\n",
+                           headerBuf[0], headerBuf[1], headerBuf[2],
+                           headerBuf[3]);
+                } else
+                  DbgPrint("%s\n", "Explorer.EXE DosHeader restored..");
+              }
+            }
           }
 
           const auto &pages = ::GetPages(obj, 64);

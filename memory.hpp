@@ -1,10 +1,10 @@
 #ifndef MEMORY_H
 #define MEMORY_H 1
 
-#include <cstdint>
-#include <cstdlib>
 #include <EASTL/string.h>
 #include <EASTL/vector.h>
+#include <cstdint>
+#include <cstdlib>
 #include <ntifs.h>
 #include <wdm.h>
 
@@ -29,7 +29,9 @@ struct Module {
 };
 
 struct Page {
-  eastl::string toString() const { return ::toString(BaseAddress, RegionSize, Type, State, Protect); }
+  eastl::string toString() const {
+    return ::toString(BaseAddress, RegionSize, Type, State, Protect);
+  }
 
   uint64_t BaseAddress;
   uint64_t AllocationBase;
@@ -41,9 +43,21 @@ struct Page {
 };
 
 eastl::vector<Process> GetProcesses();
-NTSTATUS OpenProcess(_In_ HANDLE pid, _Out_ PEPROCESS *pep, _Out_ HANDLE *obj);
-NTSTATUS CloseProcess(_In_ _Out_ PEPROCESS *pep, _In_ _Out_ HANDLE *obj);
-eastl::vector<Page> GetPages(_In_ HANDLE obj, SIZE_T maxPages = 1024, ULONG_PTR startAddress = 0);
+NTSTATUS OpenProcess(_In_ HANDLE pid, _Out_ PEPROCESS *pep, _Out_ HANDLE *process);
+NTSTATUS CloseProcess(_In_ _Out_ PEPROCESS *pep, _In_ _Out_ HANDLE *process);
+eastl::vector<Page> GetPages(_In_ HANDLE obj, SIZE_T maxPages = 1024,
+                             ULONG_PTR startAddress = 0);
 eastl::vector<Module> GetModules(_In_ PEPROCESS Process, _In_ BOOLEAN isWow64);
+NTSTATUS ProtectVirtualMemory(_In_ PEPROCESS pep,
+                              _In_ uint64_t addr,
+                              _In_ SIZE_T size, _In_ ULONG newProt,
+                              _Out_ ULONG *oldProt);
+NTSTATUS RestoreProtectVirtualMemory(_In_ PEPROCESS pep, _In_ uint64_t addr,
+                                     _In_ SIZE_T siz, _In_ ULONG old_prot);
+NTSTATUS ReadVirtualMemory(_In_ PEPROCESS pep, _In_ uint64_t sourceAddress,
+                           _Out_ UCHAR *targetAddress, _In_ _Out_ SIZE_T *size);
+NTSTATUS WriteVirtualMemory(_In_ PEPROCESS pep, _In_ UCHAR *sourceAddress,
+                            _Out_ uint64_t targetAddress,
+                            _In_ _Out_ SIZE_T *size);
 
 #endif
