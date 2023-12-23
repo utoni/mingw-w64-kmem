@@ -1,10 +1,6 @@
-# Mingw64 C++ Driver Example
+# Mingw64 C++ Memory Driver
 
-An example ready to use together with [mingw-w64-dpp](https://github.com/utoni/mingw-w64-dpp).
-
-You can lookup the documentation there.
-
-For TLDR folks:
+Made for [mingw-w64-dpp](https://github.com/utoni/mingw-w64-dpp).
 
 ```shell
 make DPP_ROOT="[path-to-mingw-w64-ddk-template-dir]" all
