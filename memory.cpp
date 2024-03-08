@@ -43,6 +43,14 @@ NTSTATUS NTAPI ZwQuerySystemInformation(_In_ int SystemInformationClass,
 NTKERNELAPI PVOID NTAPI PsGetProcessWow64Process(_In_ PEPROCESS Process);
 };
 
+static int g_waitCount = 100;
+static LONGLONG g_waitTimeout = (-1LL) * 10LL * 1000LL * 250LL; // 250ms
+
+void SetLdrInitWaitPrefs(int waitCount, LONGLONG waitTimeout) {
+    g_waitCount = waitCount;
+    g_waitTimeout = waitTimeout;
+}
+
 eastl::vector<Process> GetProcesses() {
   eastl::vector<Process> result;
   ULONG memoryNeeded = 0;
@@ -161,8 +169,8 @@ eastl::vector<Module> GetModules(_In_ PEPROCESS Process, _In_ BOOLEAN isWow64) {
     }
 
     if (!ldr32->Initialized) {
-      while (!ldr32->Initialized && waitCount++ < 4) {
-        LARGE_INTEGER wait = {.QuadPart = -2500};
+      while (!ldr32->Initialized && waitCount++ < g_waitCount) {
+        LARGE_INTEGER wait = {.QuadPart = g_waitTimeout};
         KeDelayExecutionThread(KernelMode, TRUE, &wait);
       }
 
@@ -204,8 +212,8 @@ eastl::vector<Module> GetModules(_In_ PEPROCESS Process, _In_ BOOLEAN isWow64) {
     }
 
     if (!ldr->Initialized) {
-      while (!ldr->Initialized && waitCount++ < 4) {
-        LARGE_INTEGER wait = {.QuadPart = -2500};
+      while (!ldr->Initialized && waitCount++ < g_waitCount) {
+        LARGE_INTEGER wait = {.QuadPart = g_waitTimeout};
         KeDelayExecutionThread(KernelMode, TRUE, &wait);
       }
 
@@ -310,7 +318,7 @@ NTSTATUS ReadVirtualMemory(_In_ PEPROCESS pep, _In_ uint64_t sourceAddress,
   return status;
 }
 
-NTSTATUS WriteVirtualMemory(_In_ PEPROCESS pep, _In_ UCHAR *sourceAddress,
+NTSTATUS WriteVirtualMemory(_In_ PEPROCESS pep, _In_ const UCHAR *sourceAddress,
                             _In_ _Out_ uint64_t targetAddress,
                             _In_ _Out_ SIZE_T *size) {
   NTSTATUS status = STATUS_SUCCESS;
