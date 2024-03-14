@@ -3,7 +3,13 @@
 Made for [mingw-w64-dpp](https://github.com/utoni/mingw-w64-dpp).
 
 ```shell
-make DPP_ROOT="[path-to-mingw-w64-ddk-template-dir]" all
+make DPP_ROOT="[path-to-mingw-w64-dpp-dir]" all
+```
+
+or if you want to install driver/batch files somewhere e.g. to a mounted NTFS volume:
+
+```shell
+make DPP_ROOT="[path-to-mingw-w64-dpp-dir]" DESTDIR=/media/win10/Users/nobody/mingw64-kmem install -j8
 ```
 
 # Examples
@@ -18,3 +24,7 @@ This ring0 based game hack provide you with:
  * unlimited breath
 
 As usual: Use it at your own risk!
+
+## Escape From Tarkov (tfk.sys)
+
+WiP!

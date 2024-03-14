@@ -91,16 +91,39 @@ public:
     }
 
     template<typename T>
+    T ReadChain(uint64_t sourceAddress, const eastl::vector<uint64_t>& chainedOffsets) {
+        for (const auto& offset : chainedOffsets) {
+            if (offset == chainedOffsets.back())
+                break;
+            sourceAddress = Read<uint64_t>(sourceAddress + offset);
+            if (!sourceAddress)
+                break;
+        }
+        return Read<T>(sourceAddress);
+    }
+
+    template<typename T, size_t N>
+    bool ReadBuffer(uint64_t sourceAddress, T out[N]) {
+        if (!IsValidAddress(sourceAddress))
+            return false;
+        SIZE_T size = sizeof(T) * N;
+        m_last_error = ReadVirtualMemory(m_pep, sourceAddress, reinterpret_cast<UCHAR*>(out), &size);
+        m_last_size = size;
+        return Succeeded<T, N>();
+    }
+
+    template<typename T>
     bool Write(uint64_t targetAddress, const T& writeData) {
         if (!IsValidAddress(targetAddress))
             return false;
         SIZE_T size = sizeof(T);
         m_last_error = WriteVirtualMemory(m_pep, reinterpret_cast<const UCHAR*>(&writeData), targetAddress, &size);
         m_last_size = size;
-        if (m_last_error == STATUS_SUCCESS && m_last_size == sizeof(T))
-            return true;
-        return false;
+        return Succeeded<T, 1>();
     }
+
+    template<typename T, size_t N>
+    bool Succeeded() { return m_last_error == STATUS_SUCCESS && m_last_size == sizeof(T) * N; }
 
     NTSTATUS LastError() { return m_last_error; }
     SIZE_T LastSize() { return m_last_size; }

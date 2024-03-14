@@ -8,12 +8,12 @@ using namespace DriverThread;
 
 static Thread thread;
 static Event shutdown_event;
+static const wchar_t targetProcess[] = L"bf4.exe";
 
 static uint64_t SearchBF4Process(void) {
   const auto &procs = ::GetProcesses();
-  const wchar_t targetProcess[] = L"bf4.exe";
   const auto &found = eastl::find_if(procs.begin(), procs.end(),
-                                     [&targetProcess](const auto &item) {
+                                     [](const auto &item) {
                                        if (item.ProcessName == targetProcess)
                                          return true;
                                        return false;
@@ -69,7 +69,7 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
               const auto mods = ::GetModules(pep, FALSE);
               DbgPrint("mods: %zu\n", mods.size());
               for (const auto &mod : mods) {
-                if (mod.BaseDllName == L"bf4.exe") {
+                if (mod.BaseDllName == targetProcess) {
                   DbgPrint("%s\n", "found");
                   base = mod.DllBase;
                   break;
@@ -170,8 +170,6 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
             memory.Write<const uint32_t>(firing_function_data + 0x0060 + 0x007C, 2);
         }
 
-        if (bf4_pid)
-          ::CloseProcess(&pep, &obj);
         return STATUS_SUCCESS;
       },
       args);

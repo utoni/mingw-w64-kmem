@@ -1,6 +1,6 @@
 @echo off
-set SERVICE_NAME=tkf
-set DRIVER="%~dp0\tkf.sys"
+set SERVICE_NAME=tfk
+set DRIVER="%~dp0\tfk.sys"
 
 net session >nul 2>&1
 if NOT %ERRORLEVEL% EQU 0 (
