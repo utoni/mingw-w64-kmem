@@ -46,6 +46,31 @@ NTKERNELAPI PVOID NTAPI PsGetProcessWow64Process(_In_ PEPROCESS Process);
 static int g_waitCount = 100;
 static LONGLONG g_waitTimeout = (-1LL) * 10LL * 1000LL * 250LL; // 250ms
 
+auto get_process_cr3(PEPROCESS pe_process) -> uint64_t
+{
+    auto process_dirbase = *(uint64_t*)((uint8_t*)pe_process + 0x28);
+
+    if (!process_dirbase)
+        return *(uint64_t*)((uint8_t*)pe_process + 0x388);
+
+    return process_dirbase;
+}
+
+auto swap_process(PEPROCESS new_process) -> PEPROCESS
+{
+    auto current_thread = KeGetCurrentThread();
+
+    auto apc_state = *(uint64_t*)((uint64_t)current_thread + 0x98);
+    auto old_process = *(uint64_t*)(apc_state + 0x20);
+
+    *(uint64_t*)(apc_state + 0x20) = reinterpret_cast<uint64_t>(new_process);
+
+    auto dir_table_base = get_process_cr3(new_process);
+    __writecr3(dir_table_base);
+
+    return reinterpret_cast<PEPROCESS>(old_process);
+}
+
 void SetLdrInitWaitPrefs(int waitCount, LONGLONG waitTimeout) {
     g_waitCount = waitCount;
     g_waitTimeout = waitTimeout;

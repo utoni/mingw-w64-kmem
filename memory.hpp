@@ -61,6 +61,9 @@ NTSTATUS WriteVirtualMemory(_In_ PEPROCESS pep, _In_ const UCHAR *sourceAddress,
                             _Out_ uint64_t targetAddress,
                             _In_ _Out_ SIZE_T *size);
 
+auto get_process_cr3(PEPROCESS pe_process) -> uint64_t;
+auto swap_process(PEPROCESS new_process) -> PEPROCESS;
+
 class Memory {
 public:
     Memory(_In_ PEPROCESS& pep) : m_pep(pep) {
@@ -99,7 +102,10 @@ public:
             if (!sourceAddress)
                 break;
         }
-        return Read<T>(sourceAddress);
+        if (chainedOffsets.size() == 0)
+            return Read<T>(sourceAddress);
+        else
+            return Read<T>(sourceAddress + chainedOffsets.back());
     }
 
     template<typename T, size_t N>
@@ -110,6 +116,13 @@ public:
         m_last_error = ReadVirtualMemory(m_pep, sourceAddress, reinterpret_cast<UCHAR*>(out), &size);
         m_last_size = size;
         return Succeeded<T, N>();
+    }
+
+    template<size_t N>
+    bool ReadString(uint64_t sourceAddress, char out[N]) {
+        const auto retval = ReadBuffer<char, N-1>(sourceAddress, out);
+        out[m_last_size] = '\0';
+        return retval;
     }
 
     template<typename T>
