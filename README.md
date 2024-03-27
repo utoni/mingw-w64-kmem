@@ -27,4 +27,7 @@ As usual: Use it at your own risk!
 
 ## Escape From Tarkov (tfk.sys)
 
-WiP!
+Yet another game hack that does nothing but:
+
+ * debug print amount of players/ai on the map
+ * debug print some info about players on the map (position, distance)

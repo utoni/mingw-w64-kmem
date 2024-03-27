@@ -1,6 +1,7 @@
 #include <ntddk.h>
 
 #include <DriverThread.hpp>
+#include <obfuscate.hpp>
 
 #include "memory.hpp"
 
@@ -8,7 +9,7 @@ using namespace DriverThread;
 
 static Thread thread;
 static Event shutdown_event;
-static const wchar_t targetProcess[] = L"bf4.exe";
+static auto targetProcess = skCrypt(L"bf4.exe");
 
 static uint64_t SearchBF4Process(void) {
   const auto &procs = ::GetProcesses();
