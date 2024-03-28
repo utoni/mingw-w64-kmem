@@ -31,3 +31,7 @@ Yet another game hack that does nothing but:
 
  * debug print amount of players/ai on the map
  * debug print some info about players on the map (position, distance)
+
+## Hunt: Showdown (ht.sys)
+
+ * chams
