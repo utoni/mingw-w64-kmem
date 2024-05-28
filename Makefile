@@ -5,10 +5,12 @@ endif
 include $(DPP_ROOT)/Makefile.inc
 
 COMMON_HEADERS = native.h memory.hpp
+CFLAGS_memory-experimental.o = -DENABLE_EXPERIMENTAL=1
 
 DRIVER_NAME = driver-kmem
-DRIVER_OBJECTS = $(DRIVER_NAME).o memory.o
+DRIVER_OBJECTS = $(DRIVER_NAME).o memory-experimental.o
 DRIVER_TARGET = $(DRIVER_NAME).sys
+CFLAGS_driver-kmem.o = -DENABLE_EXPERIMENTAL=1
 
 TARKOV_NAME = tfk
 TARKOV_OBJECTS = tarkov.o memory.o
@@ -40,6 +42,9 @@ clean:
 	rm -f $(HUNT_OBJECTS) $(HUNT_TARGET)
 	rm -f $(BF4_OBJECTS) $(BF4_TARGET)
 
+memory-experimental.o: memory.cpp
+	$(call BUILD_CPP_OBJECT,$<,$@)
+
 %.o: %.cpp $(COMMON_HEADERS)
 	$(call BUILD_CPP_OBJECT,$<,$@)
 
@@ -54,3 +59,7 @@ $(HUNT_TARGET): $(HUNT_OBJECTS)
 
 $(BF4_TARGET): $(BF4_OBJECTS)
 	$(call LINK_CPP_KERNEL_TARGET,$(BF4_OBJECTS),$@)
+
+.NOTPARALLEL: all install clean
+.PHONY: all install clean
+.DEFAULT_GOAL := all

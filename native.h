@@ -1,6 +1,9 @@
 #ifndef NATIVE_H
 #define NATIVE_H 1
 
+#define MM_COPY_MEMORY_PHYSICAL             0x1
+#define MM_COPY_MEMORY_VIRTUAL              0x2
+
 // QuerySystemInformation
 
 typedef enum _SYSTEM_INFORMATION_CLASS {
@@ -167,5 +170,12 @@ typedef struct _PEB {
   ULONG AtlThunkSListPtr32;
   PVOID ApiSetMap;
 } PEB, *PPEB;
+
+typedef struct _MM_COPY_ADDRESS {
+  union {
+    PVOID            VirtualAddress;
+    PHYSICAL_ADDRESS PhysicalAddress;
+  };
+} MM_COPY_ADDRESS, *PMMCOPY_ADDRESS;
 
 #endif

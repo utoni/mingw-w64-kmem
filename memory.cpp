@@ -5,6 +5,17 @@
 #include "memory.hpp"
 #include "native.h"
 
+#define WINDOWS_1803 17134
+#define WINDOWS_1809 17763
+#define WINDOWS_1903 18362
+#define WINDOWS_1909 18363
+#define WINDOWS_2004 19041
+#define WINDOWS_20H2 19569
+#define WINDOWS_21H1 20180
+#define WINDOWS_22H2 19045
+
+#define MIN(a, b) (a < b ? a : b)
+
 extern "C" {
 NTSTATUS NTAPI WrapperObOpenObjectByPointer(
     _In_ PVOID obj, _In_ ULONG HandleAttributes,
@@ -18,12 +29,20 @@ NTSTATUS NTAPI WrapperZwProtectVirtualMemory(
     _Out_ PULONG OldAccessProtection);
 
 NTSTATUS NTAPI WrapperMmCopyVirtualMemory(_In_ PEPROCESS SourceProcess,
-                                   _In_ PVOID SourceAddress,
-                                   _In_ PEPROCESS TargetProcess,
-                                   _In_ PVOID TargetAddress,
-                                   _In_ SIZE_T BufferSize,
-                                   _In_ KPROCESSOR_MODE PreviousMode,
-                                   _Out_ PSIZE_T ReturnSize);
+                                          _In_ PVOID SourceAddress,
+                                          _In_ PEPROCESS TargetProcess,
+                                          _In_ PVOID TargetAddress,
+                                          _In_ SIZE_T BufferSize,
+                                          _In_ KPROCESSOR_MODE PreviousMode,
+                                          _Out_ PSIZE_T ReturnSize);
+
+PVOID NTAPI MmMapIoSpaceEx(_In_ PHYSICAL_ADDRESS PhysicalAddress,
+                           _In_ SIZE_T NumberOfBytes, _In_ ULONG Protect);
+
+NTSTATUS NTAPI MmCopyMemory(_In_ PVOID TargetAddress,
+                            _In_ MM_COPY_ADDRESS SourceAddress,
+                            _In_ SIZE_T NumberOfBytes, _In_ ULONG Flags,
+                            _Out_ PSIZE_T NumberOfBytesTransferred);
 
 NTKERNELAPI
 PPEB NTAPI PsGetProcessPeb(_In_ PEPROCESS Process);
@@ -46,34 +65,255 @@ NTKERNELAPI PVOID NTAPI PsGetProcessWow64Process(_In_ PEPROCESS Process);
 static int g_waitCount = 100;
 static LONGLONG g_waitTimeout = (-1LL) * 10LL * 1000LL * 250LL; // 250ms
 
-auto get_process_cr3(PEPROCESS pe_process) -> uint64_t
-{
-    auto process_dirbase = *(uint64_t*)((uint8_t*)pe_process + 0x28);
+#ifdef ENABLE_EXPERIMENTAL
+uint64_t Experimental::GetProcessCr3(_In_ const PEPROCESS pe_process) {
+  PUCHAR process = (PUCHAR)pe_process;
+  ULONG_PTR process_dirbase =
+      *(PULONG_PTR)(process + 0x28); // dirbase x64, 32bit is 0x18
+  if (process_dirbase == 0) {
+    uint64_t UserDirOffset = Experimental::GetUserDirectoryTableBaseOffset();
 
-    if (!process_dirbase)
-        return *(uint64_t*)((uint8_t*)pe_process + 0x388);
-
-    return process_dirbase;
+    ULONG_PTR process_userdirbase = *(PULONG_PTR)(process + UserDirOffset);
+    return process_userdirbase;
+  }
+  return process_dirbase;
 }
 
-auto swap_process(PEPROCESS new_process) -> PEPROCESS
-{
-    auto current_thread = KeGetCurrentThread();
+PEPROCESS Experimental::SwapProcess(_In_ PEPROCESS new_process) {
+  auto current_thread = KeGetCurrentThread();
 
-    auto apc_state = *(uint64_t*)((uint64_t)current_thread + 0x98);
-    auto old_process = *(uint64_t*)(apc_state + 0x20);
+  auto apc_state = *(uint64_t *)((uint64_t)current_thread + 0x98);
+  auto old_process = *(uint64_t *)(apc_state + 0x20);
 
-    *(uint64_t*)(apc_state + 0x20) = reinterpret_cast<uint64_t>(new_process);
+  *(uint64_t *)(apc_state + 0x20) = reinterpret_cast<uint64_t>(new_process);
 
-    auto dir_table_base = get_process_cr3(new_process);
-    __writecr3(dir_table_base);
+  auto dir_table_base = GetProcessCr3(new_process);
+  __writecr3(dir_table_base);
 
-    return reinterpret_cast<PEPROCESS>(old_process);
+  return reinterpret_cast<PEPROCESS>(old_process);
 }
+
+uint64_t Experimental::GetUserDirectoryTableBaseOffset() {
+  RTL_OSVERSIONINFOW ver = {};
+  RtlGetVersion(&ver);
+  switch (ver.dwBuildNumber) {
+  case WINDOWS_1803:
+    return 0x0278;
+    break;
+  case WINDOWS_1809:
+    return 0x0278;
+    break;
+  case WINDOWS_1903:
+    return 0x0280;
+    break;
+  case WINDOWS_1909:
+    return 0x0280;
+    break;
+  case WINDOWS_2004:
+    return 0x0388;
+    break;
+  case WINDOWS_20H2:
+    return 0x0388;
+    break;
+  case WINDOWS_21H1:
+    return 0x0388;
+    break;
+  case WINDOWS_22H2:
+    return 0x0388;
+    break;
+  default:
+    return 0x0388;
+  }
+}
+
+NTSTATUS Experimental::ReadPhysicalAddress(_In_ PVOID TargetAddress,
+                                           _In_ PVOID lpBuffer,
+                                           _In_ SIZE_T Size,
+                                           _Out_ SIZE_T *BytesRead) {
+  MM_COPY_ADDRESS AddrToRead = {};
+  AddrToRead.PhysicalAddress.QuadPart = (LONGLONG)TargetAddress;
+  return MmCopyMemory(lpBuffer, AddrToRead, Size, MM_COPY_MEMORY_PHYSICAL,
+                      BytesRead);
+}
+
+NTSTATUS Experimental::WritePhysicalAddress(_In_ PVOID TargetAddress,
+                                            _In_ PVOID lpBuffer,
+                                            _In_ SIZE_T Size,
+                                            _Out_ SIZE_T *BytesWritten) {
+  if (!TargetAddress)
+    return STATUS_UNSUCCESSFUL;
+
+  PHYSICAL_ADDRESS AddrToWrite = {};
+  AddrToWrite.QuadPart = LONGLONG(TargetAddress);
+
+  PVOID pmapped_mem = MmMapIoSpaceEx(AddrToWrite, Size, PAGE_READWRITE);
+
+  if (!pmapped_mem)
+    return STATUS_UNSUCCESSFUL;
+
+  memcpy(pmapped_mem, lpBuffer, Size);
+
+  *BytesWritten = Size;
+  MmUnmapIoSpace(pmapped_mem, Size);
+  return STATUS_SUCCESS;
+}
+
+uint64_t Experimental::GetKernelDirBase() {
+  PUCHAR process = (PUCHAR)PsGetCurrentProcess();
+  ULONG_PTR cr3 = *(PULONG_PTR)(process + 0x28); // dirbase x64, 32bit is 0x18
+  return cr3;
+}
+
+uint64_t Experimental::TranslateLinearAddress(_In_ uint64_t directoryTableBase,
+                                              _In_ uint64_t virtualAddress) {
+  directoryTableBase &= ~0xf;
+
+  UINT64 pageOffset =
+      virtualAddress & ~(~0ul << Experimental::page_offset_size);
+  UINT64 pte = ((virtualAddress >> 12) & (0x1ffll));
+  UINT64 pt = ((virtualAddress >> 21) & (0x1ffll));
+  UINT64 pd = ((virtualAddress >> 30) & (0x1ffll));
+  UINT64 pdp = ((virtualAddress >> 39) & (0x1ffll));
+
+  SIZE_T readsize = 0;
+  UINT64 pdpe = 0;
+  ReadPhysicalAddress(PVOID(directoryTableBase + 8 * pdp), &pdpe, sizeof(pdpe),
+                      &readsize);
+  if (~pdpe & 1)
+    return 0;
+
+  UINT64 pde = 0;
+  ReadPhysicalAddress(PVOID((pdpe & Experimental::page_mask) + 8 * pd), &pde,
+                      sizeof(pde), &readsize);
+  if (~pde & 1)
+    return 0;
+
+  /* 1GB large page, use pde's 12-34 bits */
+  if (pde & 0x80)
+    return (pde & (~0ull << 42 >> 12)) + (virtualAddress & ~(~0ull << 30));
+
+  UINT64 pteAddr = 0;
+  ReadPhysicalAddress(PVOID((pde & Experimental::page_mask) + 8 * pt), &pteAddr,
+                      sizeof(pteAddr), &readsize);
+  if (~pteAddr & 1)
+    return 0;
+
+  /* 2MB large page */
+  if (pteAddr & 0x80)
+    return (pteAddr & Experimental::page_mask) +
+           (virtualAddress & ~(~0ull << 21));
+
+  virtualAddress = 0;
+  ReadPhysicalAddress(PVOID((pteAddr & Experimental::page_mask) + 8 * pte),
+                      &virtualAddress, sizeof(virtualAddress), &readsize);
+  virtualAddress &= Experimental::page_mask;
+
+  if (!virtualAddress)
+    return 0;
+
+  return virtualAddress + pageOffset;
+}
+
+NTSTATUS Experimental::WriteProcessMemory(_In_ HANDLE pid,
+                                          _In_ uint64_t Address,
+                                          _In_ uint64_t AllocatedBuffer,
+                                          _In_ SIZE_T size,
+                                          _Out_ SIZE_T *written) {
+  DbgPrintEx(0, 0, "\n[Write] Address is: %llx", Address);
+  PEPROCESS pProcess = NULL;
+  if (pid == NULL)
+    return STATUS_UNSUCCESSFUL;
+
+  NTSTATUS NtRet = PsLookupProcessByProcessId(pid, &pProcess);
+  if (NtRet != STATUS_SUCCESS)
+    return NtRet;
+
+  ULONG_PTR process_dirbase = GetProcessCr3(pProcess);
+  ObDereferenceObject(pProcess);
+  DbgPrintEx(0, 0, "\n[Write] DirBase is: %llx", process_dirbase);
+  SIZE_T CurOffset = 0;
+  SIZE_T TotalSize = size;
+  while (TotalSize) {
+    uint64_t CurPhysAddr =
+        TranslateLinearAddress(process_dirbase, (ULONG64)Address + CurOffset);
+    if (!CurPhysAddr)
+      return STATUS_UNSUCCESSFUL;
+
+    ULONG64 WriteSize = MIN(PAGE_SIZE - (CurPhysAddr & 0xFFF), TotalSize);
+    SIZE_T BytesWritten = 0;
+    NtRet = WritePhysicalAddress((PVOID)CurPhysAddr,
+                                 (PVOID)((ULONG64)AllocatedBuffer + CurOffset),
+                                 WriteSize, &BytesWritten);
+    TotalSize -= BytesWritten;
+    CurOffset += BytesWritten;
+    if (NtRet != STATUS_SUCCESS)
+      break;
+    if (BytesWritten == 0)
+      break;
+  }
+
+  *written = CurOffset;
+  return NtRet;
+}
+
+NTSTATUS Experimental::ReadProcessMemory(_In_ HANDLE pid, _In_ uint64_t Address,
+                                         _In_ uint64_t AllocatedBuffer,
+                                         _In_ SIZE_T size, _Out_ SIZE_T *read) {
+  DbgPrintEx(0, 0, "\n[Read] Address is: %llx", Address);
+  PEPROCESS pProcess = NULL;
+  if (pid == NULL)
+    return STATUS_UNSUCCESSFUL;
+
+  NTSTATUS NtRet = PsLookupProcessByProcessId(pid, &pProcess);
+  if (NtRet != STATUS_SUCCESS)
+    return NtRet;
+
+  ULONG_PTR process_dirbase = GetProcessCr3(pProcess);
+  DbgPrintEx(0, 0, "\n[Read] DirBase is: %llx", process_dirbase);
+  ObDereferenceObject(pProcess);
+
+  SIZE_T CurOffset = 0;
+  SIZE_T TotalSize = size;
+  while (TotalSize) {
+    uint64_t CurPhysAddr =
+        TranslateLinearAddress(process_dirbase, (ULONG64)Address + CurOffset);
+    if (!CurPhysAddr)
+      return STATUS_UNSUCCESSFUL;
+
+    ULONG64 ReadSize = MIN(PAGE_SIZE - (CurPhysAddr & 0xFFF), TotalSize);
+    SIZE_T BytesRead = 0;
+    NtRet = ReadPhysicalAddress((PVOID)CurPhysAddr,
+                                (PVOID)((ULONG64)AllocatedBuffer + CurOffset),
+                                ReadSize, &BytesRead);
+    TotalSize -= BytesRead;
+    CurOffset += BytesRead;
+    if (NtRet != STATUS_SUCCESS)
+      break;
+    if (BytesRead == 0)
+      break;
+  }
+
+  *read = CurOffset;
+  return NtRet;
+}
+
+uint64_t
+Experimental::VirtualAddressToPhysicalAddress(_In_ PVOID VirtualAddress) {
+  return MmGetPhysicalAddress(VirtualAddress).QuadPart;
+}
+
+uint64_t
+Experimental::PhysicalAddressToVirtualAddress(_In_ uint64_t PhysicalAddress) {
+  PHYSICAL_ADDRESS PhysicalAddr = {};
+  PhysicalAddr.QuadPart = PhysicalAddress;
+
+  return reinterpret_cast<uint64_t>(MmGetVirtualForPhysical(PhysicalAddr));
+}
+#endif
 
 void SetLdrInitWaitPrefs(int waitCount, LONGLONG waitTimeout) {
-    g_waitCount = waitCount;
-    g_waitTimeout = waitTimeout;
+  g_waitCount = waitCount;
+  g_waitTimeout = waitTimeout;
 }
 
 eastl::vector<Process> GetProcesses() {
@@ -116,13 +356,14 @@ eastl::vector<Process> GetProcesses() {
   return result;
 }
 
-NTSTATUS OpenProcess(_In_ HANDLE pid, _Out_ PEPROCESS *pep, _Out_ HANDLE *process) {
+NTSTATUS OpenProcess(_In_ HANDLE pid, _Out_ PEPROCESS *pep,
+                     _Out_ HANDLE *process) {
   NTSTATUS status = PsLookupProcessByProcessId(pid, pep);
 
   if (NT_SUCCESS(status)) {
     status = WrapperObOpenObjectByPointer(
-        *pep, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, GENERIC_ALL | PROCESS_ALL_ACCESS,
-        *PsProcessType, KernelMode, process);
+        *pep, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL,
+        GENERIC_ALL | PROCESS_ALL_ACCESS, *PsProcessType, KernelMode, process);
   }
 
   return status;
@@ -278,8 +519,7 @@ extern "C" int ehandler(_In_ EXCEPTION_POINTERS *ep) {
   return EXCEPTION_EXECUTE_HANDLER;
 }
 
-NTSTATUS ProtectVirtualMemory(_In_ PEPROCESS pep,
-                              _In_ uint64_t addr,
+NTSTATUS ProtectVirtualMemory(_In_ PEPROCESS pep, _In_ uint64_t addr,
                               _In_ SIZE_T size, _In_ ULONG newProt,
                               _Out_ ULONG *oldProt) {
   KAPC_STATE apcState;
@@ -291,8 +531,8 @@ NTSTATUS ProtectVirtualMemory(_In_ PEPROCESS pep,
   KeStackAttachProcess((PKPROCESS)pep, &apcState);
 
   __dpptry(ehandler, pvm) {
-    status =
-        WrapperZwProtectVirtualMemory(ZwCurrentProcess(), &paddr, &psize, newProt, &prot);
+    status = WrapperZwProtectVirtualMemory(ZwCurrentProcess(), &paddr, &psize,
+                                           newProt, &prot);
     *oldProt = prot;
   }
   __dppexcept(pvm) { status = STATUS_ACCESS_VIOLATION; }
@@ -314,8 +554,8 @@ NTSTATUS RestoreProtectVirtualMemory(_In_ PEPROCESS pep, _In_ uint64_t addr,
   KeStackAttachProcess((PKPROCESS)pep, &apcState);
 
   __dpptry(ehandler, rpvm) {
-    status =
-        WrapperZwProtectVirtualMemory(ZwCurrentProcess(), &paddr, &psize, old_prot, &prot);
+    status = WrapperZwProtectVirtualMemory(ZwCurrentProcess(), &paddr, &psize,
+                                           old_prot, &prot);
   }
   __dppexcept(rpvm) { status = STATUS_ACCESS_VIOLATION; }
   __dpptryend(rpvm);
@@ -331,9 +571,9 @@ NTSTATUS ReadVirtualMemory(_In_ PEPROCESS pep, _In_ uint64_t sourceAddress,
   SIZE_T bytes = 0;
 
   __dpptry(ehandler, rvm) {
-    status =
-        WrapperMmCopyVirtualMemory(pep, (PVOID)sourceAddress, PsGetCurrentProcess(),
-                            (PVOID)targetAddress, *size, KernelMode, &bytes);
+    status = WrapperMmCopyVirtualMemory(
+        pep, (PVOID)sourceAddress, PsGetCurrentProcess(), (PVOID)targetAddress,
+        *size, KernelMode, &bytes);
   }
   __dppexcept(rvm) { status = STATUS_UNSUCCESSFUL; }
   __dpptryend(rvm);
@@ -350,9 +590,9 @@ NTSTATUS WriteVirtualMemory(_In_ PEPROCESS pep, _In_ const UCHAR *sourceAddress,
   SIZE_T bytes = 0;
 
   __dpptry(ehandler, wvm) {
-    status =
-        WrapperMmCopyVirtualMemory(PsGetCurrentProcess(), (PVOID)sourceAddress, pep,
-                            (PVOID)targetAddress, *size, KernelMode, &bytes);
+    status = WrapperMmCopyVirtualMemory(
+        PsGetCurrentProcess(), (PVOID)sourceAddress, pep, (PVOID)targetAddress,
+        *size, KernelMode, &bytes);
   }
   __dppexcept(wvm) { status = STATUS_UNSUCCESSFUL; }
   __dpptryend(wvm);
