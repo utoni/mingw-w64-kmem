@@ -1,3 +1,6 @@
+/*
+ * Won't work after CryEngine 5.11 update (2024-08-15)
+ */
 #include <ntddk.h>
 
 #include <EASTL/array.h>
@@ -8,6 +11,9 @@
 
 #include "memory.hpp"
 #include "stringify.hpp"
+
+#define STRNCMP_CR(haystack, needle) \
+    (strncmp(haystack, skCrypt(needle), sizeof(needle) - 1))
 
 using namespace DriverThread;
 
@@ -104,7 +110,7 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
 
           // Offsets stolen from: https://www.unknowncheats.me/forum/3809820-post343.html
           Memory memory(pep);
-          auto sys_global_env = memory.Read<uint64_t>(base + 0x5EF2FA0);
+          auto sys_global_env = memory.Read<uint64_t>(base + 0x5EFCF90);
 
           auto entity_system = memory.Read<uint64_t>(sys_global_env + 0xA8);
           uint16_t number_of_objects = memory.Read<uint16_t>(entity_system + 0x4006A);
@@ -120,8 +126,9 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
             char entity_name[128] = {};
             memory.ReadString<sizeof(entity_name)>(entity_name_ptr, entity_name);
 
-            if (strncmp(entity_name, skCrypt("ShootingRange_Target"), sizeof("ShootingRange_Target") - 1) == 0 ||
-              strncmp(entity_name, skCrypt("HunterBasic"), sizeof("HunterBasic") - 1) == 0) {
+            if (STRNCMP_CR(entity_name, "ShootingRange_Target") == 0 ||
+                STRNCMP_CR(entity_name, "HunterBasic") == 0)
+            {
               hunters++;
 
               auto slots_ptr = memory.Read<uint64_t>(entity + 0xA8);

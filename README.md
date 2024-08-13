@@ -34,4 +34,6 @@ Yet another game hack that does nothing but:
 
 ## Hunt: Showdown (ht.sys)
 
+This cheat won't work after 2024-08-15 (CryEngine 5.11 update).
+
  * chams
