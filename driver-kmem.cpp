@@ -17,6 +17,53 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
   UNREFERENCED_PARAMETER(DriverObject);
   UNREFERENCED_PARAMETER(RegistryPath);
 
+  const eastl::array<uint8_t, 10> buffer = {0x41, 0xDE, 0xAD, 0xC0, 0xDE,
+                                            0xCA, 0xFE, 0xCA, 0xFE, 0x41};
+  const eastl::array<uint8_t, 2> pattern_00 = {0xCA, 0xFE};
+  const eastl::array<uint8_t, 2> pattern_01 = {0xFE, 0x41};
+  const eastl::array<uint8_t, 1> pattern_02 = {0x41};
+  const eastl::array<uint8_t, 10> pattern_03 = {0x41, 0x00, 0x00, 0x00, 0x00,
+                                                0x00, 0x00, 0x00, 0x00, 0x41};
+  eastl::vector<size_t> found_offsets;
+
+  auto found = PatternScanner::SearchWithMask(
+      buffer.data(), eastl::size(buffer), pattern_00.data(),
+      eastl::size(pattern_00), "xx", found_offsets);
+  if (!found) {
+    DbgPrint("%s\n", "First pattern not found!");
+    return STATUS_UNSUCCESSFUL;
+  }
+  found = PatternScanner::SearchWithMask(
+      buffer.data(), eastl::size(buffer), pattern_01.data(),
+      eastl::size(pattern_01), "xx", found_offsets);
+  if (!found) {
+    DbgPrint("%s\n", "Second pattern not found!");
+    return STATUS_UNSUCCESSFUL;
+  }
+  found = PatternScanner::SearchWithMask(
+      buffer.data(), eastl::size(buffer), pattern_02.data(),
+      eastl::size(pattern_02), "x", found_offsets);
+  if (!found) {
+    DbgPrint("%s\n", "Third pattern not found!");
+    return STATUS_UNSUCCESSFUL;
+  }
+  found = PatternScanner::SearchWithMask(buffer, pattern_03, "x????????x",
+                                         found_offsets);
+  if (!found) {
+    DbgPrint("%s\n", "Fourth pattern not found!");
+    return STATUS_UNSUCCESSFUL;
+  }
+  found = PatternScanner::SearchWithMask(
+      buffer, {0xDE, 0xAD, 0x00, 0x00, 0x00, 0x00, 0xCA, 0xFE}, "xx????xx",
+      found_offsets);
+  if (!found) {
+    DbgPrint("%s\n", "Fifth pattern not found!");
+    return STATUS_UNSUCCESSFUL;
+  }
+  for (const auto offset : found_offsets) {
+    DbgPrint("Offset: %zu\n", offset);
+  }
+
   DbgPrint("%s\n", "Starting thread..");
   auto args = eastl::make_shared<ThreadArgs>();
   thread.Start(
@@ -156,8 +203,23 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
             DbgPrint("%s\n", page.toString().c_str());
           }
 
+          PatternScanner::ProcessModule scanner(pep, obj, {0x4D, 0x5A, 0x90},
+                                                "xxx");
+          eastl::vector<size_t> results;
+          auto found = scanner.Scan(L"Explorer.EXE", results);
+          if (!found)
+            DbgPrint("%s\n", "PatternScanner::ProcessModule was unsuccessful");
+          if (results.size() != 1)
+            DbgPrint(
+                "PatternScanner::ProcessModule was unsuccessful: %zu results\n",
+                results.size());
+          else
+            DbgPrint("PatternScanner::ProcessModule found address for 'MZ\\x90': %p\n", results[0]);
+
           ::CloseProcess(&pep, &obj);
         }
+
+        DbgPrint("%s\n", "Done.");
 
         return STATUS_SUCCESS;
       },

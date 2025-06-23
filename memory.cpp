@@ -1,4 +1,5 @@
 #include <EASTL/finally.h>
+#include <EASTL/shared_ptr.h>
 #include <eastl_compat.hpp>
 #include <except.h>
 
@@ -600,4 +601,74 @@ NTSTATUS WriteVirtualMemory(_In_ PEPROCESS pep, _In_ const UCHAR *sourceAddress,
   *size = bytes;
 
   return status;
+}
+
+bool PatternScanner::SearchWithMask(const uint8_t *buffer, size_t buffer_size,
+                                    const uint8_t *pattern, size_t pattern_size,
+                                    const eastl::string_view &mask,
+                                    eastl::vector<size_t> &results) {
+  bool found_some = false;
+
+  if (mask.length() != pattern_size)
+    return false;
+
+  for (size_t i = 0; i < buffer_size - pattern_size + 1; ++i) {
+    bool match = true;
+    for (size_t j = 0; j < pattern_size; ++j) {
+      if (mask[j] == 'x' && buffer[i + j] != pattern[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      found_some = true;
+      results.push_back(i);
+    }
+  }
+
+  return found_some;
+}
+
+bool PatternScanner::ProcessModule::Scan(const eastl::wstring_view &module_name,
+                                         eastl::vector<size_t> &results,
+                                         size_t max_results) {
+  if (eastl::size(m_pattern) > 64)
+    return false;
+
+  const auto mods = ::GetModules(m_pep, FALSE);
+  const auto mod = eastl::find_if(mods.begin(), mods.end(),
+                                  [&module_name](const Module &mod) {
+                                    return mod.BaseDllName == module_name;
+                                  });
+  if (mod == mods.end())
+    return false;
+
+  auto copy_buffer = eastl::make_shared<eastl::array<uint8_t, 4096 * 8>>();
+  const auto pages = ::GetPages(m_obj, m_max_pages);
+  for (const auto page : pages) {
+    if (page.BaseAddress < mod->DllBase ||
+        page.BaseAddress + page.RegionSize > mod->DllBase + mod->SizeOfImage)
+      continue;
+    SIZE_T offset = 0;
+    while (offset < page.RegionSize - eastl::size(m_pattern) + 1) {
+      SIZE_T in_out_size =
+          eastl::min(eastl::size(*copy_buffer), page.RegionSize - offset);
+      const auto ret =
+          ::ReadVirtualMemory(m_pep, page.BaseAddress + offset,
+                              eastl::begin(*copy_buffer), &in_out_size);
+      if (!NT_SUCCESS(ret) || in_out_size == 0)
+        break;
+
+      if (SearchWithMask(eastl::begin(*copy_buffer), in_out_size,
+                         m_pattern.begin(), eastl::size(m_pattern), m_mask,
+                         results)) {
+        if (results.size() >= max_results)
+          return false;
+      }
+
+      offset += in_out_size - eastl::size(m_pattern) + 1;
+    }
+  }
+
+  return true;
 }

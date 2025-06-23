@@ -1,6 +1,8 @@
 #ifndef MEMORY_H
 #define MEMORY_H 1
 
+#include <EASTL/array.h>
+#include <EASTL/initializer_list.h>
 #include <EASTL/string.h>
 #include <EASTL/vector.h>
 #include <cstdint>
@@ -175,4 +177,49 @@ private:
   NTSTATUS m_last_error;
   SIZE_T m_last_size;
 };
+
+namespace PatternScanner {
+bool SearchWithMask(const uint8_t *buffer, size_t buffer_size,
+                    const uint8_t *pattern, size_t pattern_size,
+                    const eastl::string_view &mask,
+                    eastl::vector<size_t> &results);
+
+template <size_t PM, size_t N>
+SearchWithMask(const eastl::array<uint8_t, N> &buffer,
+               const eastl::array<uint8_t, PM> &pattern,
+               const eastl::string_view &mask, eastl::vector<size_t> &results) {
+  return SearchWithMask(buffer.data(), eastl::size(buffer), pattern.data(),
+                        eastl::size(pattern), mask, results);
+}
+
+template <size_t N>
+SearchWithMask(const eastl::array<uint8_t, N> &buffer,
+               const std::initializer_list<uint8_t> &pattern,
+               const eastl::string_view &mask, eastl::vector<size_t> &results) {
+  return SearchWithMask(buffer.data(), eastl::size(buffer), pattern.begin(),
+                        eastl::size(pattern), mask, results);
+}
+
+class ProcessModule {
+public:
+  ProcessModule(_In_ PEPROCESS pep, _In_ HANDLE obj,
+                const std::initializer_list<uint8_t> &pattern,
+                const eastl::string_view &mask)
+      : m_max_pages(8192), m_pep(pep), m_obj(obj), m_pattern(pattern),
+        m_mask(mask), m_offset(0) {}
+  ProcessModule(const ProcessModule &) = delete;
+
+  void SetMaxPages(SIZE_T new_max_pages) { m_max_pages = new_max_pages; }
+  bool Scan(const eastl::wstring_view &module_name,
+            eastl::vector<size_t> &results, size_t max_results = 128);
+
+private:
+  SIZE_T m_max_pages;
+  PEPROCESS m_pep;
+  HANDLE m_obj;
+  const std::initializer_list<uint8_t> &m_pattern;
+  const eastl::string_view &m_mask;
+  size_t m_offset;
+};
+} // namespace PatternScanner
 #endif
