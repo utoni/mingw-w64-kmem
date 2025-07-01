@@ -207,18 +207,26 @@ public:
                 const eastl::string_view &mask)
       : m_max_pages(8192), m_pep(pep), m_obj(obj), m_pattern(pattern),
         m_mask(mask), m_offset(0) {}
+  ProcessModule(_In_ PEPROCESS pep, _In_ HANDLE obj,
+                const std::initializer_list<uint8_t> &pattern, const char *mask)
+      : m_max_pages(8192), m_pep(pep), m_obj(obj), m_pattern(pattern),
+        m_mask(mask), m_offset(0) {}
   ProcessModule(const ProcessModule &) = delete;
 
   void SetMaxPages(SIZE_T new_max_pages) { m_max_pages = new_max_pages; }
   bool Scan(const eastl::wstring_view &module_name,
             eastl::vector<size_t> &results, size_t max_results = 128);
+  bool Scan(const wchar_t *module_name, eastl::vector<size_t> &results,
+            size_t max_results = 128) {
+    return Scan(eastl::wstring_view(module_name), results, max_results);
+  }
 
 private:
   SIZE_T m_max_pages;
   PEPROCESS m_pep;
   HANDLE m_obj;
   const std::initializer_list<uint8_t> &m_pattern;
-  const eastl::string_view &m_mask;
+  const eastl::string_view m_mask;
   size_t m_offset;
 };
 } // namespace PatternScanner
