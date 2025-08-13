@@ -1,6 +1,3 @@
-/*
- * Won't work after CryEngine 5.11 update (2024-08-15)
- */
 #include <ntddk.h>
 
 #include <DriverThread.hpp>
@@ -158,7 +155,7 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
             auto entity_system = memory.Read<uint64_t>(sys_global_env + 0xC0);
             uint16_t number_of_objects =
                 memory.Read<uint16_t>(entity_system + 0x40092);
-            uint64_t entity_list = entity_system + 0x40098;
+            uint64_t entity_list = entity_system + 0x400A0;
 
             for (decltype(number_of_objects) i = 0; i < number_of_objects;
                  ++i) {
@@ -176,11 +173,15 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
 #endif
 
               if (STRNCMP_CR(entity_name, "ShootingRange_Target") == 0 ||
-                  STRNCMP_CR(entity_name, "HunterBasic") == 0) {
+                  STRNCMP_CR(entity_name, "HunterBasic") == 0 ||
+                  STRNCMP_CR(entity_name, "Hunter") == 0) {
                 auto slots_ptr = memory.Read<uint64_t>(entity + 0xA8);
                 auto slot_ptr = memory.Read<uint64_t>(slots_ptr + 0);
                 auto render_node_ptr = memory.Read<uint64_t>(slot_ptr + 0xA0);
 
+                memory.Write<uint32_t>(render_node_ptr + 0x10, 0x80018);
+                memory.Write<float>(render_node_ptr + 0x2c, 10000.f);
+                memory.Write<uint64_t>(render_node_ptr + 0x130, 0x0004ff00);
 #ifdef HUNT2_DEBUG
                 render_nodes_found[render_node_ptr]++;
 #endif
@@ -190,6 +191,13 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
                          STRNCMP_CR(entity_name, "grunts.specials") == 0 ||
                          STRNCMP_CR(entity_name, "butcher") == 0 ||
                          STRNCMP_CR(entity_name, "immolater") == 0) {
+                auto slots_ptr = memory.Read<uint64_t>(entity + 0xA8);
+                auto slot_ptr = memory.Read<uint64_t>(slots_ptr + 0);
+                auto render_node_ptr = memory.Read<uint64_t>(slot_ptr + 0xA0);
+
+                memory.Write<uint32_t>(render_node_ptr + 0x10, 0x80018);
+                memory.Write<float>(render_node_ptr + 0x2c, 10000.f);
+                memory.Write<uint64_t>(render_node_ptr + 0x130, 0x0004ff00);
               }
             }
 #ifdef HUNT2_DEBUG

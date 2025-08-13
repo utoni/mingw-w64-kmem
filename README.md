@@ -37,3 +37,7 @@ Yet another game hack that does nothing but:
 This cheat won't work after 2024-08-15 (CryEngine 5.11 update).
 
  * chams
+
+## Hunt: Showdown 1896 (ht2.sys)
+
+ * chams
