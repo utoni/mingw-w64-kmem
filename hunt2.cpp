@@ -181,7 +181,7 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
 
                 memory.Write<uint32_t>(render_node_ptr + 0x10, 0x80018);
                 memory.Write<float>(render_node_ptr + 0x2c, 10000.f);
-                memory.Write<uint64_t>(render_node_ptr + 0x130, 0x0004ff00);
+                memory.Write<uint64_t>(render_node_ptr + 0x130, 0x0004ffaf);
 #ifdef HUNT2_DEBUG
                 render_nodes_found[render_node_ptr]++;
 #endif
@@ -211,7 +211,8 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
             }
 #endif
           }
-          ::CloseProcess(&pep, &obj);
+          if (hunt_pid)
+            ::CloseProcess(&pep, &obj);
         }
         __dppexcept(mainloop_seh) { return STATUS_UNSUCCESSFUL; }
         __dpptryend(mainloop_seh);
