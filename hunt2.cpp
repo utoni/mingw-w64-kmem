@@ -20,17 +20,6 @@ static Event shutdown_event;
 static auto targetProcess = skCrypt(L"HuntGame.exe");
 static auto targetModule = skCrypt(L"GameHunt.dll");
 
-enum ColorType : uint32_t {
-  Pink = 0xFFA0FF40,
-  Red = 0xFF000080,
-  Green = 0x00FF00FF,
-  Blue = 0x0000FF60,
-  Cyan = 0x00FFFFFF,
-  Orange = 0xFFA500FF,
-  Yellow = 0xFFFF0060,
-  White = 0xFFFFFFFF
-};
-
 static uint64_t SearchHuntProcess(void) {
   const auto &procs = ::GetProcesses();
   const auto &found =
@@ -86,18 +75,18 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
         __dpptry(mainloop_exception_handler, mainloop_seh) {
           while (shutdown_event.Wait(wait_timeout) == STATUS_TIMEOUT) {
             if (!hunt_pid) {
-#ifdef HUNT2_DEBUG
-              cur_iter = 0;
-              objects_found.clear();
-              render_nodes_found.clear();
-#endif
-
               wait_timeout = (-1LL) * 10LL * 1000LL * 1000LL;
               hunt_pid = reinterpret_cast<HANDLE>(SearchHuntProcess());
               if (hunt_pid == NULL) {
                 continue;
               }
               DbgPrint(skCrypt("pid: %p\n"), hunt_pid);
+
+#ifdef HUNT2_DEBUG
+              cur_iter = 0;
+              objects_found.clear();
+              render_nodes_found.clear();
+#endif
 
               if (!NT_SUCCESS(::OpenProcess(hunt_pid, &pep, &obj))) {
                 hunt_pid = NULL;
@@ -175,13 +164,18 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
               if (STRNCMP_CR(entity_name, "ShootingRange_Target") == 0 ||
                   STRNCMP_CR(entity_name, "HunterBasic") == 0 ||
                   STRNCMP_CR(entity_name, "Hunter") == 0) {
+                uint64_t color = 0x0004ffaf;
+                auto spectators = memory.ReadChain<int32_t>(entity, { 0x198, 0x20, 0xD0, 0xE8, 0x330 });
+                if (spectators > 0)
+                  color = 0x6824ffaf;
+
                 auto slots_ptr = memory.Read<uint64_t>(entity + 0xA8);
                 auto slot_ptr = memory.Read<uint64_t>(slots_ptr + 0);
                 auto render_node_ptr = memory.Read<uint64_t>(slot_ptr + 0xA0);
 
                 memory.Write<uint32_t>(render_node_ptr + 0x10, 0x80018);
                 memory.Write<float>(render_node_ptr + 0x2c, 10000.f);
-                memory.Write<uint64_t>(render_node_ptr + 0x130, 0x0004ffaf);
+                memory.Write<decltype(color)>(render_node_ptr + 0x130, color);
 #ifdef HUNT2_DEBUG
                 render_nodes_found[render_node_ptr]++;
 #endif
