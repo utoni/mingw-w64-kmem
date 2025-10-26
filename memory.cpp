@@ -37,6 +37,24 @@ NTSTATUS NTAPI WrapperMmCopyVirtualMemory(_In_ PEPROCESS SourceProcess,
                                           _In_ KPROCESSOR_MODE PreviousMode,
                                           _Out_ PSIZE_T ReturnSize);
 
+NTSTATUS NTAPI WrapperZwCreateFile(
+    _Out_ PHANDLE FileHandle, _In_ ACCESS_MASK DesiredAccess,
+    _In_ POBJECT_ATTRIBUTES ObjectAttributes,
+    _Out_ PIO_STATUS_BLOCK StatusBlock, _In_ PLARGE_INTEGER AllocationSize,
+    _In_ ULONG FileAttributes, _In_ ULONG ShareAccess,
+    _In_ ULONG CreateDisposition, _In_ ULONG CreateOptions, _In_ PVOID EaBuffer,
+    _In_ ULONG EaLength);
+
+NTSTATUS NTAPI WrapperZwClose(_In_ HANDLE Handle);
+
+NTSTATUS NTAPI WrapperZwWriteFile(_In_ HANDLE FileHandle, _In_ HANDLE Event,
+                                  _In_ PIO_APC_ROUTINE ApcRoutine,
+                                  _In_ PVOID ApcContext,
+                                  _Out_ PIO_STATUS_BLOCK StatusBlock,
+                                  _In_ PVOID Buffer, _In_ ULONG Length,
+                                  _In_ PLARGE_INTEGER ByteOffset,
+                                  _In_ PULONG Key);
+
 PVOID NTAPI MmMapIoSpaceEx(_In_ PHYSICAL_ADDRESS PhysicalAddress,
                            _In_ SIZE_T NumberOfBytes, _In_ ULONG Protect);
 
@@ -601,6 +619,55 @@ NTSTATUS WriteVirtualMemory(_In_ PEPROCESS pep, _In_ const UCHAR *sourceAddress,
   *size = bytes;
 
   return status;
+}
+
+bool FileLogger::Init(const eastl::wstring &path, bool exclusive, bool append) {
+  OBJECT_ATTRIBUTES obj_attr;
+  UNICODE_STRING file_name;
+  NTSTATUS status;
+
+  if (m_handle != nullptr)
+    return false;
+
+  m_path = path;
+  if (m_path.empty())
+    return false;
+
+  RtlInitUnicodeString(&file_name, m_path.c_str());
+
+  InitializeObjectAttributes(&obj_attr, &file_name,
+                             OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL,
+                             NULL);
+  status =
+      WrapperZwCreateFile(&m_handle, GENERIC_WRITE | (append ? FILE_APPEND_DATA : 0), &obj_attr, &m_io_status,
+                          NULL, FILE_ATTRIBUTE_NORMAL, (exclusive ? 0 : FILE_SHARE_READ), FILE_OVERWRITE_IF,
+                          FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+  if (!NT_SUCCESS(status))
+    return false;
+
+  return true;
+}
+
+bool FileLogger::Close() {
+  if (m_handle == nullptr)
+    return false;
+
+  if (m_path.empty())
+    return false;
+
+  WrapperZwClose(m_handle);
+  m_handle = nullptr;
+  return true;
+}
+
+bool FileLogger::WriteString(eastl::string &&write_buffer) {
+  NTSTATUS status = WrapperZwWriteFile(m_handle, NULL, NULL, NULL, &m_io_status,
+                                       (void *)write_buffer.c_str(),
+                                       write_buffer.length(), NULL, NULL);
+  if (!NT_SUCCESS(status))
+    return false;
+
+  return true;
 }
 
 bool PatternScanner::SearchWithMask(const uint8_t *buffer, size_t buffer_size,

@@ -94,6 +94,25 @@ uint64_t PhysicalAddressToVirtualAddress(_In_ uint64_t PhysicalAddress);
 }; // namespace Experimental
 #endif
 
+class FileLogger {
+public:
+  FileLogger() : m_path{""}, m_handle{nullptr} {}
+  ~FileLogger() { Close(); }
+  bool Init(const eastl::wstring &path, bool exclusive = false, bool append = false);
+  bool Close();
+  template <typename... Args>
+  bool Write(const eastl::string &format, Args&&... args) {
+    auto str = ::format(format, eastl::forward<decltype(args)>(args)...);
+    return WriteString(eastl::move(str));
+  }
+  bool WriteString(eastl::string &&write_buffer);
+
+private:
+  eastl::wstring m_path;
+  HANDLE m_handle;
+  IO_STATUS_BLOCK m_io_status;
+};
+
 class Memory {
 public:
   Memory(_In_ PEPROCESS &pep) : m_pep(pep) { ClearLastErrorAndSize(); }

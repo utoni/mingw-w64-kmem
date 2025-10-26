@@ -17,6 +17,9 @@ using namespace DriverThread;
 
 static Thread thread;
 static Event shutdown_event;
+#ifdef HUNT2_DEBUG
+static FileLogger logger;
+#endif
 static auto targetProcess = skCrypt(L"HuntGame.exe");
 static auto targetModule = skCrypt(L"GameHunt.dll");
 
@@ -69,6 +72,9 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
         const size_t print_every = 50;
         eastl::unordered_map<eastl::string, size_t> objects_found;
         eastl::unordered_map<uint64_t, size_t> render_nodes_found;
+
+        logger.Init(L"\\??\\C:\\ht2dbg.log");
+        logger.Write("Init.\n");
 #endif
 
         DbgPrint("%s\n", "start");
@@ -117,33 +123,33 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
                 ::CloseProcess(&pep, &obj);
                 continue;
               }
+
+#ifdef HUNT2_DEBUG
+              PatternScanner::ProcessModule scanner(
+                pep, obj, {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x8B},
+                skCrypt("xxx????xxx"));
+              eastl::vector<size_t> results;
+              auto found = scanner.Scan(targetModule, results);
+              if (!found)
+                logger.Write("%s\n",
+                             "Pattern Scan not found or failed!");
+              for (const auto result : results)
+                logger.Write("Pattern Offset: %zu\n", result);
+#endif
             }
 
         // Offsets stolen from:
         // https://www.unknowncheats.me/forum/other-fps-games/350352-hunt-showdown-51.html
 #ifdef HUNT2_DEBUG
             cur_iter++;
-
-            PatternScanner::ProcessModule scanner(
-                pep, obj,
-                {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x8B},
-                skCrypt("xxx????xxx"));
-            eastl::vector<size_t> results;
-            auto found = scanner.Scan(targetModule, results);
-            if (!found)
-              DbgPrint(skCrypt("%s\n"),
-                       skCrypt("Pattern Scan not found or failed!"));
-            if ((cur_iter % print_every) == 0)
-              for (const auto result : results)
-                DbgPrint(skCrypt("Pattern Offset: %zu\n"), result);
 #endif
 
             Memory memory(pep);
-            auto sys_global_env = memory.Read<uint64_t>(base + 0x2991318);
+            auto sys_global_env = memory.Read<uint64_t>(base + 0x2438318);
 
             auto entity_system = memory.Read<uint64_t>(sys_global_env + 0xC0);
-            uint16_t number_of_objects =
-                memory.Read<uint16_t>(entity_system + 0x40092);
+            int16_t number_of_objects =
+                memory.Read<int16_t>(entity_system + 0x40092);
             uint64_t entity_list = entity_system + 0x400A0;
 
             for (decltype(number_of_objects) i = 0; i < number_of_objects;
@@ -196,17 +202,24 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
             }
 #ifdef HUNT2_DEBUG
             if ((cur_iter % print_every) == 0) {
+              logger.Write("[DBG #{}]\n", cur_iter);
               for (const auto &object : objects_found)
-                DbgPrint(skCrypt("Object `%s' found: %zu times"), object.first,
-                         object.second);
+                logger.Write("Object `{}' found: {} times\n", object.first,
+                             object.second);
               for (const auto &render_node : render_nodes_found)
-                DbgPrint(skCrypt("Render Node %p found: %zu times"),
+                logger.Write("Render Node {} found: {} times\n",
                          render_node.first, render_node.second);
+
+              objects_found.clear();
+              render_nodes_found.clear();
             }
 #endif
           }
           if (hunt_pid)
             ::CloseProcess(&pep, &obj);
+#ifdef HUNT2_DEBUG
+          logger.Write("Done.\n");
+#endif
         }
         __dppexcept(mainloop_seh) { return STATUS_UNSUCCESSFUL; }
         __dpptryend(mainloop_seh);
