@@ -3,45 +3,49 @@
 
 #include <stdint.h>
 
+#define VK_ESCAPE 0x1B
+
+extern "C" {
+  extern SHORT GetAsyncKeyState(_In_ int vKey);
+  extern VOID Sleep(_In_ unsigned int dwMilliseconds);
+}
+
 int main() {
   IPC::UserSharedMemory umem;
-  struct my_slot_data* my_data;
+  size_t iterations = 0;
 
   if (!umem.Allocate(sizeof(my_slot_data), USERMODE_IPC_SLOTS)) {
     fprintf(stderr, "Allocation failed!\n");
     goto error;
   }
 
-  fprintf(stderr, "Raw Pointer: 0x%p\n", umem.GetRawPtr());
+  for (;;)
+  {
+    auto ret = umem.WriteData([](void* data) {
+      auto slot_data = reinterpret_cast<struct my_slot_data*>(data);
+      slot_data->user_data = 0xBEEFBEEF;
+    });
+    if (!ret) {
+      printf("\nWrite failure!\n");
+      break;
+    }
 
-  my_data = reinterpret_cast<struct my_slot_data*>(umem.GetSlotData(0));
-  if (!my_data) {
-    fprintf(stderr, "Get slot data failed!\n");
-    goto error;
+    ret = umem.ReadData([&iterations](void* data) {
+      auto slot_data = reinterpret_cast<struct my_slot_data*>(data);
+      printf("[%zu][User: %X | Kernel (first): %X | Kernel (last): %X][PRESS ESC TO STOP]\r", ++iterations,
+             slot_data->user_data, slot_data->first_bytes, slot_data->last_bytes);
+    });
+    if (!ret) {
+      printf("\nRead failure!\n");
+    }
+
+    if (GetAsyncKeyState(VK_ESCAPE) > 0)
+      break;
+
+    ::Sleep(1000);
   }
-  my_data->something = 0xCAFECAFE;
 
-  my_data = reinterpret_cast<struct my_slot_data*>(umem.GetSlotData(1));
-  if (!my_data) {
-    fprintf(stderr, "Get slot data failed!\n");
-    goto error;
-  }
-  my_data->something = 0xBEEFBEEF;
-
-  my_data = reinterpret_cast<struct my_slot_data*>(umem.GetSlotData(2));
-  if (!my_data) {
-    fprintf(stderr, "Get slot data failed!\n");
-    goto error;
-  }
-  my_data->something = 0xDEADDEAD;
-
-  my_data = reinterpret_cast<struct my_slot_data*>(umem.GetSlotData(0));
-  printf("Slot 0 (0x%p) something: 0x%X\n", my_data, my_data->something);
-  my_data = reinterpret_cast<struct my_slot_data*>(umem.GetSlotData(1));
-  printf("Slot 1 (0x%p) something: 0x%X\n", my_data, my_data->something);
-  my_data = reinterpret_cast<struct my_slot_data*>(umem.GetSlotData(2));
-  printf("Slot 2 (0x%p) something: 0x%X\n", my_data, my_data->something);
-
+  printf("\nFin.\n");
   system("pause");
   return 0;
 error:

@@ -1,5 +1,7 @@
 #include <ntddk.h>
 
+#include <EASTL/algorithm.h>
+#include <except.h>
 #include <DriverThread.hpp>
 
 #include "ipc.hpp"
@@ -9,10 +11,16 @@
 using namespace DriverThread;
 
 static Thread thread;
+static Event shutdown_event;
 
 extern "C" {
 DRIVER_INITIALIZE DriverEntry;
 DRIVER_UNLOAD DriverUnload;
+
+int shm_exception_handler(_In_ EXCEPTION_POINTERS *lpEP) {
+  (void)lpEP;
+  return EXCEPTION_EXECUTE_HANDLER;
+}
 
 NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
                      _In_ PUNICODE_STRING RegistryPath) {
@@ -239,15 +247,43 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
           DbgPrint("Process '%ws' pid: %zu\n", targetProcess,
                    found->UniqueProcessId);
 
-          IPC::KernelSharedMemory km;
-          if (!km.FindSharedMemory(sizeof(my_slot_data), USERMODE_IPC_SLOTS, *found)) {
-            DbgPrint("Shared Memory not found!\n");
-            return STATUS_SUCCESS;
-          }
-          DbgPrint("IPC Memory chunks: %zu\n", km.AmountOfChunks());
+          __dpptry(shm_exception_handler, shm_seh) {
+            IPC::KernelSharedMemory km;
+            if (!km.FindSharedMemory(sizeof(my_slot_data), USERMODE_IPC_SLOTS, *found)) {
+              DbgPrint("Shared Memory not found!\n");
+              return STATUS_SUCCESS;
+            }
+            DbgPrint("IPC Memory chunks: %zu\n", km.AmountOfChunks());
 
-          while (km.ProcessEvents(10000LL) != false) {
-          }
+            uint8_t alpha_shift = 0;
+            uint32_t user_data = 0;
+            while (km.ProcessEvents(10000LL) != false
+                   && shutdown_event.Wait(-1LL) == STATUS_TIMEOUT)
+            {
+              auto success = km.WriteData([&alpha_shift, &user_data](void* data) {
+                auto slot_data = reinterpret_cast<struct my_slot_data*>(data);
+                if (user_data != 0)
+                  user_data = slot_data->user_data = 0;
+                ::memset(slot_data->kernel_data, 0x41 + (alpha_shift++ % 16), sizeof(slot_data->kernel_data));
+              });
+              if (!success) {
+                DbgPrint("Shared memory write failed!\n");
+                break;
+              }
+
+              success = km.ReadData([&user_data](void* data) {
+                auto slot_data = reinterpret_cast<struct my_slot_data*>(data);
+                user_data = slot_data->user_data;
+                if (user_data != 0)
+                  DbgPrint("User data changed to: %X\n", user_data);
+              });
+              if (!success) {
+                DbgPrint("Shared memory read failed!\n");
+                break;
+              }
+            }
+          } __dppexcept(shm_seh) { return STATUS_UNSUCCESSFUL; }
+          __dpptryend(shm_seh);
         }
 
         DbgPrint("%s\n", "Done.");
@@ -259,10 +295,20 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
   return STATUS_SUCCESS;
 }
 
+int unload_exception_handler(_In_ EXCEPTION_POINTERS *lpEP) {
+  (void)lpEP;
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+
 VOID DriverUnload(_In_ struct _DRIVER_OBJECT *DriverObject) {
   UNREFERENCED_PARAMETER(DriverObject);
 
-  DbgPrint("%s\n", "Waiting for thread termination..");
-  thread.WaitForTermination();
+  //DbgPrint("%s\n", "Waiting for thread termination..");
+  __dpptry(unload_exception_handler, unload_seh) {
+    shutdown_event.Notify();
+    thread.WaitForTermination((-1LL) * 1000LL * 1000LL * 1000LL * 1000LL);
+  }
+  __dppexcept(unload_seh) {}
+  __dpptryend(unload_seh);
 }
 }

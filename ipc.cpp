@@ -1,8 +1,10 @@
 #include <cstdint>
+#include <EASTL/algorithm.h>
 #include <EASTL/finally.h>
 #include <EASTL/string.h>
 #include <except.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "ipc.hpp"
 #include "memory.hpp"
@@ -28,6 +30,8 @@ extern "C" {
   };
 
 #ifdef BUILD_USERMODE
+  #include <signal.h>
+
   typedef LONG (*PVECTORED_EXCEPTION_HANDLER)(_In_ _EXCEPTION_POINTERS *ExceptionInfo);
 
   extern VOID Sleep(_In_ unsigned int dwMilliseconds);
@@ -63,7 +67,7 @@ extern "C" {
 
     g_exceptionHandlers.shm->RequestShutdown();
     while (g_exceptionHandlers.shm->OpenedByKernel())
-      Sleep(100);
+      ::Sleep(100);
 
     if (g_exceptionHandlers.mtx != NULL)
       ::ReleaseMutex(g_exceptionHandlers.mtx);
@@ -110,6 +114,29 @@ extern "C" {
     if (g_exceptionHandlers.mtx != NULL)
       ::ReleaseMutex(g_exceptionHandlers.mtx);
   }
+
+  static void SignalHandler(int signum) {
+    (void)signum;
+
+    if (g_exceptionHandlers.mtx != NULL)
+      ::WaitForSingleObject(g_exceptionHandlers.mtx, (unsigned int)-1);
+
+    g_exceptionHandlers.shm->RequestShutdown();
+    while (g_exceptionHandlers.shm->OpenedByKernel())
+      ::Sleep(100);
+
+    if (g_exceptionHandlers.mtx != NULL)
+      ::ReleaseMutex(g_exceptionHandlers.mtx);
+  }
+
+  static void SetupSignalHandler() {
+    ::signal(SIGABRT, SignalHandler);
+    ::signal(SIGFPE, SignalHandler);
+    ::signal(SIGILL, SignalHandler);
+    ::signal(SIGINT, SignalHandler);
+    ::signal(SIGSEGV, SignalHandler);
+    ::signal(SIGTERM, SignalHandler);
+  }
 }
 
 
@@ -117,10 +144,13 @@ UserSharedMemory::UserSharedMemory() : m_shm_size{0}, m_slots{0}, m_memory{nullp
 }
 
 UserSharedMemory::~UserSharedMemory() {
+  auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
+  ::memset(rcu_shared->magic, 0x00, magic_size); // Kernel should not find this shared memory anymore!
   RequestShutdown();
   while (OpenedByKernel())
-    Sleep(100);
+    ::Sleep(100);
   DeleteExceptionHandler();
+  ::VirtualFree(m_read_buffer, m_shm_size, MEM_RELEASE);
   ::VirtualFree(m_memory, sizeof(rcu_shared) + sizeof(void*) * m_slots, MEM_RELEASE);
   m_memory = nullptr;
 }
@@ -130,6 +160,7 @@ bool UserSharedMemory::Allocate(std::size_t shm_size, std::size_t slots) {
     return false; // Already initialized
   if (!SetupExceptionHandlerOnce(this))
     return false;
+  SetupSignalHandler();
 
   m_memory = ::VirtualAlloc(NULL, sizeof(rcu_shared) + sizeof(void*) * slots,
                             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -144,13 +175,17 @@ bool UserSharedMemory::Allocate(std::size_t shm_size, std::size_t slots) {
   rcu_shared->active = 0;
 
   for (auto i = 0; i < slots; ++i) {
-    rcu_shared->slots_memory[i] = reinterpret_cast<struct rcu_slot*>(VirtualAlloc(nullptr, sizeof(rcu_slot) + shm_size,
-                                                                                  MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    rcu_shared->slots_memory[i] = reinterpret_cast<struct rcu_slot*>(::VirtualAlloc(nullptr, sizeof(rcu_slot) + shm_size,
+                                                                                    MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
   }
   for (auto i = 0; i < slots; ++i) {
     if (!rcu_shared->slots_memory[i])
       return false;
   }
+
+  m_read_buffer = ::VirtualAlloc(NULL, shm_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if (!m_read_buffer)
+    return false;
 
   ::memcpy(rcu_shared->magic, magic.begin(), magic_size); // Kernel may now find this shared memory!
 
@@ -177,13 +212,49 @@ bool UserSharedMemory::ShutdownRequested() {
   return false;
 }
 
-void* UserSharedMemory::GetSlotData(std::size_t slot) {
-  if (slot >= m_slots)
-    return nullptr;
-
+bool UserSharedMemory::ReadData(const eastl::function<void(void*)> & read_callback) {
   auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
-  auto rcu_slot = &rcu_shared->slots_memory[slot]->data[0];
-  return rcu_slot;
+  if (!rcu_shared)
+    return false;
+
+  for (;;) {
+    long int active = InterlockedCompareExchange64(&rcu_shared->active, 0, 0);
+    struct rcu_slot* slot = rcu_shared->slots_memory[active];
+    if (!slot)
+      return false;
+
+    long long int gen_before = InterlockedCompareExchange64(&slot->generation, 0, 0);
+    ::memcpy(m_read_buffer, &slot->data[0], m_shm_size);
+    // Memory Barrier / Fence ?
+
+    long long int gen_after = InterlockedCompareExchange64(&slot->generation, 0, 0);
+    if (gen_before == gen_after && (gen_before & 1) == 0) {
+      read_callback(m_read_buffer);
+      return true;
+    }
+
+    ::Sleep(1);
+  }
+}
+
+bool UserSharedMemory::WriteData(const eastl::function<void(void*)> & write_callback) {
+  auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
+  if (!rcu_shared)
+    return false;
+
+  long long int active = InterlockedCompareExchange64(&rcu_shared->active, 0, 0);
+  long long int next = (active + 1) % m_slots;
+  struct rcu_slot* slot = rcu_shared->slots_memory[next];
+  InterlockedIncrement64(&slot->generation);
+
+  // Memory Barrier / Fence ?
+  write_callback(&slot->data[0]);
+  // Memory Barrier / Fence ?
+
+  InterlockedIncrement64(&slot->generation);
+  InterlockedExchange64(&rcu_shared->active, next);
+
+  return true;
 }
 
 #else // BUILD_USERMODE
@@ -278,16 +349,23 @@ bool KernelSharedMemory::Chunk::UnmapFromSystem() {
 }
 
 KernelSharedMemory::KernelSharedMemory()
-  : m_shm_size{0}, m_slots{0}, m_pep{nullptr}, m_obj{nullptr}, m_chunks{} {
+  : m_shm_size{0}, m_slots{0}, m_pep{nullptr}, m_obj{nullptr}, m_chunks{}
+{
+  m_read_buffer = new uint8_t[m_shm_size];
 }
 
 KernelSharedMemory::~KernelSharedMemory() {
   ShutdownImmediately();
+  delete[] m_read_buffer;
+  m_read_buffer = nullptr;
 }
 
 bool KernelSharedMemory::FindSharedMemory(std::size_t shm_size, std::size_t slots,
                                           const Process& target_proc) {
   auto pid = reinterpret_cast<HANDLE>(target_proc.UniqueProcessId);
+
+  if (!m_read_buffer)
+    return false;
 
   if (!NT_SUCCESS(::OpenProcess(pid, &m_pep, &m_obj))) {
     m_pep = nullptr;
@@ -378,6 +456,65 @@ bool KernelSharedMemory::ShutdownImmediately() {
   ::CloseProcess(&m_pep, &m_obj);
   m_pep = nullptr;
   m_obj = nullptr;
+
+  return true;
+}
+
+void* KernelSharedMemory::GetByUserVA(void* user_va) {
+  const auto & found = eastl::find_if(m_chunks.cbegin(), m_chunks.cend(), [user_va](const auto & item) {
+    return reinterpret_cast<uint64_t>(user_va) == item.UserVA;
+  });
+  if (found == m_chunks.cend())
+    return nullptr;
+  return found->Memory;
+}
+
+bool KernelSharedMemory::ReadData(const eastl::function<void(void*)> & read_callback) {
+  auto rcu_shared = m_chunks[0].Get<struct rcu_shared>();
+  if (!rcu_shared)
+    return false;
+
+  for (;;) {
+    const auto active = InterlockedCompareExchange64(&rcu_shared->active, 0, 0);
+    auto slot = Get<struct rcu_slot>(rcu_shared->slots_memory[active]);
+    if (!slot)
+      return false;
+
+    long long int gen_before = InterlockedCompareExchange64(&slot->generation, 0, 0);
+    ::memcpy(m_read_buffer, &slot->data[0], m_shm_size);
+    // Memory Barrier / Fence ?
+
+    long long int gen_after = InterlockedCompareExchange64(&slot->generation, 0, 0);
+    if (gen_before == gen_after && (gen_before & 1) == 0) {
+      read_callback(m_read_buffer);
+      return true;
+    }
+
+    LARGE_INTEGER wait = {.QuadPart = (-1LL) * 100LL};
+    KeDelayExecutionThread(KernelMode, TRUE, &wait);
+  }
+
+  return true;
+}
+
+bool KernelSharedMemory::WriteData(const eastl::function<void(void*)> & write_callback) {
+  auto rcu_shared = m_chunks[0].Get<struct rcu_shared>();
+  if (!rcu_shared)
+    return false;
+
+  const auto active = InterlockedCompareExchange64(&rcu_shared->active, 0, 0);
+  const auto next = (active + 1) % m_slots;
+  auto slot = Get<struct rcu_slot>(rcu_shared->slots_memory[next]);
+  if (!slot)
+    return false;
+  InterlockedIncrement64(&slot->generation);
+
+  // Memory Barrier / Fence ?
+  write_callback(&slot->data[0]);
+  // Memory Barrier / Fence ?
+
+  InterlockedIncrement64(&slot->generation);
+  InterlockedExchange64(&rcu_shared->active, next);
 
   return true;
 }

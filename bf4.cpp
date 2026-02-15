@@ -1,6 +1,7 @@
 #include <ntddk.h>
 
 #include <DriverThread.hpp>
+#include <EASTL/algorithm.h>
 #include <except.h>
 #include <obfuscate.hpp>
 

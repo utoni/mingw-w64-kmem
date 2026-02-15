@@ -1,3 +1,4 @@
+#include <EASTL/algorithm.h>
 #include <EASTL/finally.h>
 #include <EASTL/shared_ptr.h>
 #include <eastl_compat.hpp>

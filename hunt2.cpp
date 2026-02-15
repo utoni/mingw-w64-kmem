@@ -1,6 +1,7 @@
 #include <ntddk.h>
 
 #include <DriverThread.hpp>
+#include <EASTL/algorithm.h>
 #include <EASTL/array.h>
 #include <EASTL/unordered_map.h>
 #include <eastl_compat.hpp>
