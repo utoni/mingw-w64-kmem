@@ -2,6 +2,7 @@
 #define MEMORY_H 1
 
 #include <EASTL/array.h>
+#include <EASTL/functional.h>
 #include <EASTL/initializer_list.h>
 #include <EASTL/string.h>
 #include <EASTL/vector.h>
@@ -198,26 +199,57 @@ private:
 };
 
 namespace PatternScanner {
+struct Result {
+  uint64_t BaseAddress;
+  uint64_t Offset;
+};
+using ResultVec = eastl::vector<Result>;
+
 bool SearchWithMask(const uint8_t *buffer, size_t buffer_size,
                     const uint8_t *pattern, size_t pattern_size,
                     const eastl::string_view &mask,
-                    eastl::vector<size_t> &results);
+                    eastl::vector<size_t> &offsets);
 
 template <size_t PM, size_t N>
 SearchWithMask(const eastl::array<uint8_t, N> &buffer,
                const eastl::array<uint8_t, PM> &pattern,
-               const eastl::string_view &mask, eastl::vector<size_t> &results) {
+               const eastl::string_view &mask,
+               eastl::vector<size_t> &offsets) {
   return SearchWithMask(buffer.data(), eastl::size(buffer), pattern.data(),
-                        eastl::size(pattern), mask, results);
+                        eastl::size(pattern), mask, offsets);
 }
 
 template <size_t N>
 SearchWithMask(const eastl::array<uint8_t, N> &buffer,
                const std::initializer_list<uint8_t> &pattern,
-               const eastl::string_view &mask, eastl::vector<size_t> &results) {
+               const eastl::string_view &mask,
+               eastl::vector<size_t> &offsets) {
   return SearchWithMask(buffer.data(), eastl::size(buffer), pattern.begin(),
-                        eastl::size(pattern), mask, results);
+                        eastl::size(pattern), mask, offsets);
 }
+
+class Page {
+public:
+  using PageSelectorCallback = eastl::function<bool(const ::Page &)>;
+
+  Page(_In_ PEPROCESS pep, _In_ HANDLE obj,
+       const std::initializer_list<uint8_t> &pattern,
+       const eastl::string_view &mask)
+      : m_max_pages(8192), m_pep(pep), m_obj(obj), m_pattern(pattern),
+        m_mask(mask) {}
+  Page(const Page &) = delete;
+
+  void SetMaxPages(SIZE_T new_max_pages) { m_max_pages = new_max_pages; }
+  bool Scan(const PageSelectorCallback & selector_cb,
+            ResultVec &results, size_t max_results = 128);
+
+private:
+  SIZE_T m_max_pages;
+  PEPROCESS m_pep;
+  HANDLE m_obj;
+  const std::initializer_list<uint8_t> &m_pattern;
+  const eastl::string_view m_mask;
+};
 
 class ProcessModule {
 public:
@@ -225,17 +257,17 @@ public:
                 const std::initializer_list<uint8_t> &pattern,
                 const eastl::string_view &mask)
       : m_max_pages(8192), m_pep(pep), m_obj(obj), m_pattern(pattern),
-        m_mask(mask), m_offset(0) {}
+        m_mask(mask) {}
   ProcessModule(_In_ PEPROCESS pep, _In_ HANDLE obj,
                 const std::initializer_list<uint8_t> &pattern, const char *mask)
       : m_max_pages(8192), m_pep(pep), m_obj(obj), m_pattern(pattern),
-        m_mask(mask), m_offset(0) {}
+        m_mask(mask) {}
   ProcessModule(const ProcessModule &) = delete;
 
   void SetMaxPages(SIZE_T new_max_pages) { m_max_pages = new_max_pages; }
   bool Scan(const eastl::wstring_view &module_name,
-            eastl::vector<size_t> &results, size_t max_results = 128);
-  bool Scan(const wchar_t *module_name, eastl::vector<size_t> &results,
+            ResultVec &results, size_t max_results = 128);
+  bool Scan(const wchar_t *module_name, ResultVec &results,
             size_t max_results = 128) {
     return Scan(eastl::wstring_view(module_name), results, max_results);
   }
@@ -246,7 +278,6 @@ private:
   HANDLE m_obj;
   const std::initializer_list<uint8_t> &m_pattern;
   const eastl::string_view m_mask;
-  size_t m_offset;
 };
 } // namespace PatternScanner
 #endif

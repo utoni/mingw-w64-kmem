@@ -673,7 +673,7 @@ bool FileLogger::WriteString(eastl::string &&write_buffer) {
 bool PatternScanner::SearchWithMask(const uint8_t *buffer, size_t buffer_size,
                                     const uint8_t *pattern, size_t pattern_size,
                                     const eastl::string_view &mask,
-                                    eastl::vector<size_t> &results) {
+                                    eastl::vector<size_t> &offsets) {
   bool found_some = false;
 
   if (mask.length() != pattern_size)
@@ -689,33 +689,34 @@ bool PatternScanner::SearchWithMask(const uint8_t *buffer, size_t buffer_size,
     }
     if (match) {
       found_some = true;
-      results.push_back(i);
+      offsets.push_back(i);
     }
   }
 
   return found_some;
 }
 
-bool PatternScanner::ProcessModule::Scan(const eastl::wstring_view &module_name,
-                                         eastl::vector<size_t> &results,
-                                         size_t max_results) {
+bool PatternScanner::Page::Scan(const PageSelectorCallback & selector_cb,
+                                ResultVec &results, size_t max_results) {
   if (eastl::size(m_pattern) > 64)
     return false;
 
-  const auto mods = ::GetModules(m_pep, FALSE);
-  const auto mod = eastl::find_if(mods.begin(), mods.end(),
-                                  [&module_name](const Module &mod) {
-                                    return mod.BaseDllName == module_name;
-                                  });
-  if (mod == mods.end())
+  auto pages = ::GetPages(m_obj, m_max_pages);
+  auto page_iter = pages.begin();
+  while (page_iter != pages.end()) {
+    if (!selector_cb(*page_iter))
+      page_iter = pages.erase(page_iter);
+    else
+      page_iter++;
+  }
+  if (pages.size() == 0)
     return false;
 
+  eastl::vector<size_t> offsets;
   auto copy_buffer = eastl::make_shared<eastl::array<uint8_t, 4096 * 8>>();
-  const auto pages = ::GetPages(m_obj, m_max_pages);
   for (const auto page : pages) {
-    if (page.BaseAddress < mod->DllBase ||
-        page.BaseAddress + page.RegionSize > mod->DllBase + mod->SizeOfImage)
-      continue;
+    Result result;
+    result.BaseAddress = page.BaseAddress;
     SIZE_T offset = 0;
     while (offset < page.RegionSize - eastl::size(m_pattern) + 1) {
       SIZE_T in_out_size =
@@ -728,9 +729,66 @@ bool PatternScanner::ProcessModule::Scan(const eastl::wstring_view &module_name,
 
       if (SearchWithMask(eastl::begin(*copy_buffer), in_out_size,
                          m_pattern.begin(), eastl::size(m_pattern), m_mask,
-                         results)) {
-        if (results.size() >= max_results)
+                         offsets)) {
+        if (offsets.size() >= max_results)
           return false;
+        for (const auto& offset : offsets) {
+          result.Offset = offset;
+          results.emplace_back(result);
+        }
+        offsets.clear();
+      }
+
+      offset += in_out_size - eastl::size(m_pattern) + 1;
+    }
+  }
+
+  return true;
+}
+
+bool PatternScanner::ProcessModule::Scan(const eastl::wstring_view &module_name,
+                                         ResultVec &results,
+                                         size_t max_results) {
+  if (eastl::size(m_pattern) > 64)
+    return false;
+
+  const auto mods = ::GetModules(m_pep, FALSE);
+  const auto mod = eastl::find_if(mods.begin(), mods.end(),
+                                  [&module_name](const Module &mod) {
+                                    return mod.BaseDllName == module_name;
+                                  });
+  if (mod == mods.end())
+    return false;
+
+  eastl::vector<size_t> offsets;
+  auto copy_buffer = eastl::make_shared<eastl::array<uint8_t, 4096 * 8>>();
+  const auto pages = ::GetPages(m_obj, m_max_pages);
+  for (const auto page : pages) {
+    if (page.BaseAddress < mod->DllBase ||
+        page.BaseAddress + page.RegionSize > mod->DllBase + mod->SizeOfImage)
+      continue;
+    Result result;
+    result.BaseAddress = page.BaseAddress;
+    SIZE_T offset = 0;
+    while (offset < page.RegionSize - eastl::size(m_pattern) + 1) {
+      SIZE_T in_out_size =
+          eastl::min(eastl::size(*copy_buffer), page.RegionSize - offset);
+      const auto ret =
+          ::ReadVirtualMemory(m_pep, page.BaseAddress + offset,
+                              eastl::begin(*copy_buffer), &in_out_size);
+      if (!NT_SUCCESS(ret) || in_out_size == 0)
+        break;
+
+      if (SearchWithMask(eastl::begin(*copy_buffer), in_out_size,
+                         m_pattern.begin(), eastl::size(m_pattern), m_mask,
+                         offsets)) {
+        if (offsets.size() >= max_results)
+          return false;
+        for (const auto& offset : offsets) {
+          result.Offset = offset;
+          results.emplace_back(result);
+        }
+        offsets.clear();
       }
 
       offset += in_out_size - eastl::size(m_pattern) + 1;

@@ -2,7 +2,9 @@
 
 #include <DriverThread.hpp>
 
+#include "ipc.hpp"
 #include "memory.hpp"
+#include "usermode-ipc.hpp"
 
 using namespace DriverThread;
 
@@ -205,7 +207,7 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
 
           PatternScanner::ProcessModule scanner(pep, obj, {0x4D, 0x5A, 0x90},
                                                 "xxx");
-          eastl::vector<size_t> results;
+          PatternScanner::ResultVec results;
           auto found = scanner.Scan(L"Explorer.EXE", results);
           if (!found)
             DbgPrint("%s\n", "PatternScanner::ProcessModule was unsuccessful");
@@ -214,9 +216,35 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
                 "PatternScanner::ProcessModule was unsuccessful: %zu results\n",
                 results.size());
           else
-            DbgPrint("PatternScanner::ProcessModule found address for 'MZ\\x90': %p\n", results[0]);
+            DbgPrint("PatternScanner::ProcessModule found address for 'MZ\\x90': 0x%p (Offset 0x%p)\n",
+                     results[0].BaseAddress + results[0].Offset, results[0].Offset);
 
           ::CloseProcess(&pep, &obj);
+        }
+
+        {
+          const auto &procs = ::GetProcesses();
+          DbgPrint("Got %zu processes on this machine\n", procs.size());
+          const wchar_t targetProcess[] = L"usermode-ipc.exe";
+          const auto &found = eastl::find_if(
+              procs.begin(), procs.end(), [&targetProcess](const auto &item) {
+                if (item.ProcessName == targetProcess)
+                  return true;
+                return false;
+              });
+          if (found == procs.end()) {
+            DbgPrint("Usermode IPC process not found: '%ws'\n", targetProcess);
+            return STATUS_SUCCESS;
+          }
+          DbgPrint("Process '%ws' pid: %zu\n", targetProcess,
+                   found->UniqueProcessId);
+
+          IPC::KernelSharedMemory km;
+          if (!km.FindSharedMemory(sizeof(my_slot_data), USERMODE_IPC_SLOTS, *found)) {
+            DbgPrint("Shared Memory not found!\n");
+            return STATUS_SUCCESS;
+          }
+          DbgPrint("IPC Memory chunks: %zu\n", km.AmountOfChunks());
         }
 
         DbgPrint("%s\n", "Done.");

@@ -128,13 +128,14 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
               PatternScanner::ProcessModule scanner(
                 pep, obj, {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x8B},
                 skCrypt("xxx????xxx"));
-              eastl::vector<size_t> results;
+              PatternScanner::ResultVec results;
               auto found = scanner.Scan(targetModule, results);
               if (!found)
                 logger.Write("%s\n",
                              "Pattern Scan not found or failed!");
               for (const auto result : results)
-                logger.Write("Pattern Offset: %zu\n", result);
+                logger.Write("Pattern Offset: %zu (Base + Offset: 0x%X)\n",
+                             result.Offset, result.BaseAddress + result.Offset);
 #endif
             }
 
@@ -145,7 +146,7 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
 #endif
 
             Memory memory(pep);
-            auto sys_global_env = memory.Read<uint64_t>(base + 0x2438318);
+            auto sys_global_env = memory.Read<uint64_t>(base + 0x2293320);
 
             auto entity_system = memory.Read<uint64_t>(sys_global_env + 0xC0);
             int16_t number_of_objects =
