@@ -21,37 +21,126 @@ extern "C" {
 
   struct rcu_shared {
     uint8_t magic[magic_size];
+    volatile long int opened_by_kernel;
+    volatile long int user_wants_shutdown;
     volatile long long int active;
     struct rcu_slot* slots_memory[0];
   };
 
 #ifdef BUILD_USERMODE
+  typedef LONG (*PVECTORED_EXCEPTION_HANDLER)(_In_ _EXCEPTION_POINTERS *ExceptionInfo);
+
+  extern VOID Sleep(_In_ unsigned int dwMilliseconds);
   extern void* VirtualAlloc(void* lpAddress, size_t dwSize, unsigned int flAllocationType,
                             unsigned int flProtect);
+  extern BOOL VirtualFree(_In_ PVOID lpAddress, _In_ SIZE_T dwSize, unsigned int dwFreeType);
+  extern PVOID AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler);
+  extern ULONG RemoveVectoredExceptionHandler(PVOID handle);
+  extern PVOID CreateMutexA(_In_ PVOID lpMutexAttributes, _In_ BOOL bInitialOwner,
+                            _In_ LPCSTR lpName);
+  extern unsigned int WaitForSingleObject(_In_ HANDLE hHandle, _In_ unsigned int dwMilliseconds);
+  extern BOOL ReleaseMutex(_In_ HANDLE hMutex);
 #endif
 }
 
 #ifdef BUILD_USERMODE
+extern "C" {
+  static struct {
+    volatile LONG initialized = 0;
+    HANDLE mtx = NULL;
+    PVOID handle = NULL;
+    UserSharedMemory * shm = NULL;
+  } g_exceptionHandlers;
+
+  static LONG ExceptionHandler(_In_ _EXCEPTION_POINTERS *ExceptionInfo) {
+    (void)ExceptionInfo;
+
+    if (g_exceptionHandlers.mtx != NULL
+        && ::WaitForSingleObject(g_exceptionHandlers.mtx, (unsigned int)-1) != 0)
+    {
+      return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    g_exceptionHandlers.shm->RequestShutdown();
+    while (g_exceptionHandlers.shm->OpenedByKernel())
+      Sleep(100);
+
+    if (g_exceptionHandlers.mtx != NULL)
+      ::ReleaseMutex(g_exceptionHandlers.mtx);
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+
+  static void DeleteExceptionHandler();
+
+  static bool SetupExceptionHandlerOnce(UserSharedMemory * shm) {
+    if (InterlockedExchange(&g_exceptionHandlers.initialized, 1) != 0)
+      return false; // Only one instance per process allowed!
+
+    if (g_exceptionHandlers.mtx == NULL)
+      g_exceptionHandlers.mtx = ::CreateMutexA(NULL, FALSE, NULL);
+    if (g_exceptionHandlers.mtx == NULL) {
+      DeleteExceptionHandler();
+      return false;
+    }
+
+    g_exceptionHandlers.shm = shm;
+    g_exceptionHandlers.handle = ::AddVectoredExceptionHandler(1, ExceptionHandler);
+    if (g_exceptionHandlers.handle == NULL) {
+      DeleteExceptionHandler();
+      return false;
+    }
+
+    return true;
+  }
+
+  static void DeleteExceptionHandler() {
+    if (InterlockedExchange(&g_exceptionHandlers.initialized, 0) == 0)
+      return;
+
+    if (g_exceptionHandlers.mtx != NULL
+        && ::WaitForSingleObject(g_exceptionHandlers.mtx, (unsigned int)-1) != 0)
+    {
+      return;
+    }
+
+    if (g_exceptionHandlers.handle != NULL)
+      ::RemoveVectoredExceptionHandler(g_exceptionHandlers.handle);
+    g_exceptionHandlers.handle = NULL;
+    g_exceptionHandlers.shm = NULL;
+    if (g_exceptionHandlers.mtx != NULL)
+      ::ReleaseMutex(g_exceptionHandlers.mtx);
+  }
+}
+
+
 UserSharedMemory::UserSharedMemory() : m_shm_size{0}, m_slots{0}, m_memory{nullptr} {
 }
 
 UserSharedMemory::~UserSharedMemory() {
-  // DO NOT `VirtualFree()` m_memory!
+  RequestShutdown();
+  while (OpenedByKernel())
+    Sleep(100);
+  DeleteExceptionHandler();
+  ::VirtualFree(m_memory, sizeof(rcu_shared) + sizeof(void*) * m_slots, MEM_RELEASE);
+  m_memory = nullptr;
 }
 
 bool UserSharedMemory::Allocate(std::size_t shm_size, std::size_t slots) {
   if (m_memory)
+    return false; // Already initialized
+  if (!SetupExceptionHandlerOnce(this))
     return false;
 
-  m_memory = ::VirtualAlloc(nullptr, sizeof(rcu_shared) + sizeof(void*) * slots,
+  m_memory = ::VirtualAlloc(NULL, sizeof(rcu_shared) + sizeof(void*) * slots,
                             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
   if (!m_memory)
     return false;
 
   auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
-  ::memcpy(rcu_shared->magic, magic.begin(), magic_size);
   m_shm_size = shm_size;
   m_slots = slots;
+  rcu_shared->opened_by_kernel = 0;
+  rcu_shared->user_wants_shutdown = 0;
   rcu_shared->active = 0;
 
   for (auto i = 0; i < slots; ++i) {
@@ -63,7 +152,29 @@ bool UserSharedMemory::Allocate(std::size_t shm_size, std::size_t slots) {
       return false;
   }
 
+  ::memcpy(rcu_shared->magic, magic.begin(), magic_size); // Kernel may now find this shared memory!
+
   return true;
+}
+
+void UserSharedMemory::RequestShutdown() {
+  auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
+  if (rcu_shared)
+    InterlockedExchange(&rcu_shared->user_wants_shutdown, 1);
+}
+
+bool UserSharedMemory::OpenedByKernel() {
+  auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
+  if (rcu_shared)
+    return InterlockedCompareExchange(&rcu_shared->opened_by_kernel, 0, 0) != 0;
+  return false;
+}
+
+bool UserSharedMemory::ShutdownRequested() {
+  auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
+  if (rcu_shared)
+    return InterlockedCompareExchange(&rcu_shared->user_wants_shutdown, 0, 0) != 0;
+  return false;
 }
 
 void* UserSharedMemory::GetSlotData(std::size_t slot) {
@@ -84,21 +195,36 @@ int map_exception_handler(_In_ EXCEPTION_POINTERS *lpEP) {
 }
 }
 
-KernelSharedMemory::Chunk::~Chunk() {
+KernelSharedMemory::Chunk::Chunk(Chunk && other) {
+  Memory = other.Memory;
+  Mdl = other.Mdl;
+  Type = other.Type;
+  UserVA = other.UserVA;
+  UserSize = other.UserSize;
+
+  other.Memory = nullptr;
+  other.Mdl = nullptr;
+  other.Type = IS_INVALID;
 }
 
-bool KernelSharedMemory::Chunk::MapToSystem(_In_ PEPROCESS pep, _In_ _Out_ PMDL* mdl) {
+KernelSharedMemory::Chunk::~Chunk() {
+  UnmapFromSystem();
+  UserVA = 0;
+  UserSize = 0;
+}
+
+bool KernelSharedMemory::Chunk::MapToSystem(_In_ PEPROCESS pep) {
   PVOID kernel_va;
   KAPC_STATE apc;
 
   if (Type != IS_INVALID)
     return false;
 
-  *mdl = IoAllocateMdl(
+  Mdl = IoAllocateMdl(
     reinterpret_cast<void*>(UserVA), UserSize,
     FALSE, FALSE, NULL
   );
-  if (!*mdl)
+  if (!Mdl)
     return false;
 
   KeStackAttachProcess((PKPROCESS)pep, &apc);
@@ -106,9 +232,9 @@ bool KernelSharedMemory::Chunk::MapToSystem(_In_ PEPROCESS pep, _In_ _Out_ PMDL*
   bool failed = false;
   __dpptry(map_exception_handler, map_seh) {
     MmProbeAndLockPages(
-      *mdl,
+      Mdl,
       UserMode,
-      IoWriteAccess
+      IoModifyAccess
     );
   }
   __dppexcept(map_seh) { failed = true; }
@@ -116,17 +242,17 @@ bool KernelSharedMemory::Chunk::MapToSystem(_In_ PEPROCESS pep, _In_ _Out_ PMDL*
 
   KeUnstackDetachProcess(&apc);
   if (failed) {
-    IoFreeMdl(*mdl);
-    *mdl = nullptr;
+    IoFreeMdl(Mdl);
+    Mdl = nullptr;
     return false;
   }
 
-  kernel_va = MmGetSystemAddressForMdlSafe(*mdl, NormalPagePriority);
+  kernel_va = MmGetSystemAddressForMdlSafe(Mdl, NormalPagePriority);
   if (!kernel_va) {
-    if ((*mdl)->MdlFlags & MDL_PAGES_LOCKED)
-      MmUnlockPages(*mdl);
-    IoFreeMdl(*mdl);
-    *mdl = nullptr;
+    if (Mdl->MdlFlags & MDL_PAGES_LOCKED)
+      MmUnlockPages(Mdl);
+    IoFreeMdl(Mdl);
+    Mdl = nullptr;
     return false;
   }
 
@@ -135,48 +261,41 @@ bool KernelSharedMemory::Chunk::MapToSystem(_In_ PEPROCESS pep, _In_ _Out_ PMDL*
   return true;
 }
 
-bool KernelSharedMemory::Chunk::UnmapFromSystem(_In_ _Out_ PMDL* mdl) {
+bool KernelSharedMemory::Chunk::UnmapFromSystem() {
   if (Type != IS_MAPPED)
     return false;
-  if ((*mdl)->MdlFlags & MDL_PAGES_LOCKED)
-    MmUnlockPages(*mdl);
-  IoFreeMdl(*mdl);
-  Memory = nullptr;
   Type = IS_INVALID;
-  *mdl = nullptr;
+
+  if (Mdl) {
+    if (Mdl->MdlFlags & MDL_PAGES_LOCKED)
+      MmUnlockPages(Mdl);
+    IoFreeMdl(Mdl);
+    Mdl = nullptr;
+  }
+
+  Memory = nullptr;
   return true;
 }
 
-bool KernelSharedMemory::Chunk::CopyToSystem(_In_ PEPROCESS pep) {
-  return false;
-}
-
-bool KernelSharedMemory::Chunk::CopyFromSystem(_In_ PEPROCESS pep) {
-  return false;
-}
-
 KernelSharedMemory::KernelSharedMemory()
-  : m_shm_size{0}, m_slots{0}, m_chunks{} {
+  : m_shm_size{0}, m_slots{0}, m_pep{nullptr}, m_obj{nullptr}, m_chunks{} {
 }
 
 KernelSharedMemory::~KernelSharedMemory() {
+  ShutdownImmediately();
 }
 
 bool KernelSharedMemory::FindSharedMemory(std::size_t shm_size, std::size_t slots,
                                           const Process& target_proc) {
-  m_pid = reinterpret_cast<HANDLE>(target_proc.UniqueProcessId);
-  PEPROCESS pep;
-  HANDLE obj;
+  auto pid = reinterpret_cast<HANDLE>(target_proc.UniqueProcessId);
 
-  if (!NT_SUCCESS(::OpenProcess(m_pid, &pep, &obj)))
+  if (!NT_SUCCESS(::OpenProcess(pid, &m_pep, &m_obj))) {
+    m_pep = nullptr;
+    m_obj = nullptr;
     return false;
-  eastl::finally close_process_on_return([&pep, &obj]() {
-    ::CloseProcess(&pep, &obj);
-    pep = nullptr;
-    obj = nullptr;
-  });
+  }
 
-  PatternScanner::Page scanner(pep, obj, magic, magic_mask);
+  PatternScanner::Page scanner(m_pep, m_obj, magic, magic_mask);
   PatternScanner::ResultVec results;
   auto found = scanner.Scan([](const Page & page) {
     return page.BaseAddress < 0x00007FF000000000 && (page.Type & MEM_PRIVATE) != 0;
@@ -186,32 +305,79 @@ bool KernelSharedMemory::FindSharedMemory(std::size_t shm_size, std::size_t slot
   if (results.size() != 1)
     return false;
 
-  PMDL mdl;
   Chunk chunk;
   chunk.UserVA = results[0].BaseAddress + results[0].Offset;
   chunk.UserSize = sizeof(struct rcu_shared) + sizeof(struct rcu_slot*) * slots;
-  if (!chunk.MapToSystem(pep, &mdl))
+  if (!chunk.MapToSystem(m_pep))
     return false;
 
   auto rs = chunk.Get<struct rcu_shared>();
   if (!rs)
     return false;
+  InterlockedExchange(&rs->opened_by_kernel, 1);
 
   m_chunks.emplace_back(std::move(chunk));
+
   for (auto slot_index = 0; slot_index < slots; ++slot_index) {
     auto slot_va = reinterpret_cast<uint64_t>(rs->slots_memory[slot_index]);
     auto slot_size = sizeof(rcu_slot) * shm_size;
 
     chunk.UserVA = slot_va;
     chunk.UserSize = slot_size;
+    if (!chunk.MapToSystem(m_pep))
+      continue;
     m_chunks.emplace_back(std::move(chunk));
   }
 
-  if (!m_chunks[0].UnmapFromSystem(&mdl))
-    return false;
-
   m_shm_size = shm_size;
   m_slots = slots;
+
+  return true;
+}
+
+bool KernelSharedMemory::ProcessEvents(long long int wait_time) {
+  if (m_chunks.size() < 1)
+    return false;
+
+  auto rs = m_chunks[0].Get<struct rcu_shared>();
+  if (!rs)
+    return false;
+
+  {
+    auto user_wants_shutdown = InterlockedCompareExchange(&rs->user_wants_shutdown, 0, 0);
+    if (user_wants_shutdown != 0) {
+      ShutdownImmediately();
+      return false;
+    }
+  }
+
+  if (wait_time > 0) {
+    LARGE_INTEGER wait = {.QuadPart = (-1LL) * (wait_time)};
+    KeDelayExecutionThread(KernelMode, FALSE, &wait);
+
+    auto user_wants_shutdown = InterlockedCompareExchange(&rs->user_wants_shutdown, 0, 0);
+    if (user_wants_shutdown != 0) {
+      ShutdownImmediately();
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool KernelSharedMemory::ShutdownImmediately() {
+  if (!m_pep || !m_obj || m_chunks.size() < 1)
+    return false;
+
+  auto rs = m_chunks[0].Get<struct rcu_shared>();
+  if (!rs)
+    return false;
+  m_chunks.clear();
+  InterlockedExchange(&rs->opened_by_kernel, 0);
+
+  ::CloseProcess(&m_pep, &m_obj);
+  m_pep = nullptr;
+  m_obj = nullptr;
 
   return true;
 }

@@ -245,6 +245,9 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
             return STATUS_SUCCESS;
           }
           DbgPrint("IPC Memory chunks: %zu\n", km.AmountOfChunks());
+
+          while (km.ProcessEvents(10000LL) != false) {
+          }
         }
 
         DbgPrint("%s\n", "Done.");
