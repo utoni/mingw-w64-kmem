@@ -44,6 +44,8 @@ extern "C" {
                             _In_ LPCSTR lpName);
   extern unsigned int WaitForSingleObject(_In_ HANDLE hHandle, _In_ unsigned int dwMilliseconds);
   extern BOOL ReleaseMutex(_In_ HANDLE hMutex);
+#else
+  #include <wdm.h>
 #endif
 }
 
@@ -150,8 +152,13 @@ UserSharedMemory::~UserSharedMemory() {
   while (OpenedByKernel())
     ::Sleep(100);
   DeleteExceptionHandler();
-  ::VirtualFree(m_read_buffer, m_shm_size, MEM_RELEASE);
-  ::VirtualFree(m_memory, sizeof(rcu_shared) + sizeof(void*) * m_slots, MEM_RELEASE);
+  ::VirtualFree(m_read_buffer, sizeof(struct rcu_slot) + m_shm_size, MEM_RELEASE);
+  m_read_buffer = nullptr;
+  for (auto i = 0; i < m_slots; ++i) {
+    ::VirtualFree(rcu_shared->slots_memory[i], sizeof(struct rcu_slot) + m_shm_size, MEM_RELEASE);
+    rcu_shared->slots_memory[i] = nullptr;
+  }
+  ::VirtualFree(m_memory, sizeof(struct rcu_shared) + sizeof(struct rcu_slot*) * m_slots, MEM_RELEASE);
   m_memory = nullptr;
 }
 
@@ -162,7 +169,7 @@ bool UserSharedMemory::Allocate(std::size_t shm_size, std::size_t slots) {
     return false;
   SetupSignalHandler();
 
-  m_memory = ::VirtualAlloc(NULL, sizeof(rcu_shared) + sizeof(void*) * slots,
+  m_memory = ::VirtualAlloc(NULL, sizeof(struct rcu_shared) + sizeof(struct rcu_slot*) * slots,
                             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
   if (!m_memory)
     return false;
@@ -175,7 +182,7 @@ bool UserSharedMemory::Allocate(std::size_t shm_size, std::size_t slots) {
   rcu_shared->active = 0;
 
   for (auto i = 0; i < slots; ++i) {
-    rcu_shared->slots_memory[i] = reinterpret_cast<struct rcu_slot*>(::VirtualAlloc(nullptr, sizeof(rcu_slot) + shm_size,
+    rcu_shared->slots_memory[i] = reinterpret_cast<struct rcu_slot*>(::VirtualAlloc(nullptr, sizeof(struct rcu_slot) + shm_size,
                                                                                     MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
   }
   for (auto i = 0; i < slots; ++i) {
@@ -183,7 +190,7 @@ bool UserSharedMemory::Allocate(std::size_t shm_size, std::size_t slots) {
       return false;
   }
 
-  m_read_buffer = ::VirtualAlloc(NULL, shm_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  m_read_buffer = ::VirtualAlloc(NULL, sizeof(struct rcu_slot) + shm_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
   if (!m_read_buffer)
     return false;
 
@@ -225,9 +232,9 @@ bool UserSharedMemory::ReadData(const eastl::function<void(void*)> & read_callba
 
     long long int gen_before = InterlockedCompareExchange64(&slot->generation, 0, 0);
     ::memcpy(m_read_buffer, &slot->data[0], m_shm_size);
-    // Memory Barrier / Fence ?
-
+    _ReadWriteBarrier();
     long long int gen_after = InterlockedCompareExchange64(&slot->generation, 0, 0);
+
     if (gen_before == gen_after && (gen_before & 1) == 0) {
       read_callback(m_read_buffer);
       return true;
@@ -245,13 +252,13 @@ bool UserSharedMemory::WriteData(const eastl::function<void(void*)> & write_call
   long long int active = InterlockedCompareExchange64(&rcu_shared->active, 0, 0);
   long long int next = (active + 1) % m_slots;
   struct rcu_slot* slot = rcu_shared->slots_memory[next];
-  InterlockedIncrement64(&slot->generation);
 
-  // Memory Barrier / Fence ?
+  InterlockedIncrement64(&slot->generation);
+  _ReadWriteBarrier();
   write_callback(&slot->data[0]);
-  // Memory Barrier / Fence ?
-
+  _ReadWriteBarrier();
   InterlockedIncrement64(&slot->generation);
+
   InterlockedExchange64(&rcu_shared->active, next);
 
   return true;
@@ -305,7 +312,7 @@ bool KernelSharedMemory::Chunk::MapToSystem(_In_ PEPROCESS pep) {
     MmProbeAndLockPages(
       Mdl,
       UserMode,
-      IoModifyAccess
+      IoWriteAccess
     );
   }
   __dppexcept(map_seh) { failed = true; }
@@ -349,14 +356,14 @@ bool KernelSharedMemory::Chunk::UnmapFromSystem() {
 }
 
 KernelSharedMemory::KernelSharedMemory()
-  : m_shm_size{0}, m_slots{0}, m_pep{nullptr}, m_obj{nullptr}, m_chunks{}
+  : m_shm_size{0}, m_slots{0}, m_pep{nullptr}, m_obj{nullptr}, m_chunks{}, m_read_buffer{nullptr}
 {
-  m_read_buffer = new uint8_t[m_shm_size];
 }
 
 KernelSharedMemory::~KernelSharedMemory() {
   ShutdownImmediately();
-  delete[] m_read_buffer;
+  if (m_read_buffer)
+    delete[] m_read_buffer;
   m_read_buffer = nullptr;
 }
 
@@ -364,6 +371,7 @@ bool KernelSharedMemory::FindSharedMemory(std::size_t shm_size, std::size_t slot
                                           const Process& target_proc) {
   auto pid = reinterpret_cast<HANDLE>(target_proc.UniqueProcessId);
 
+  m_read_buffer = new uint8_t[shm_size];
   if (!m_read_buffer)
     return false;
 
@@ -398,7 +406,7 @@ bool KernelSharedMemory::FindSharedMemory(std::size_t shm_size, std::size_t slot
 
   for (auto slot_index = 0; slot_index < slots; ++slot_index) {
     auto slot_va = reinterpret_cast<uint64_t>(rs->slots_memory[slot_index]);
-    auto slot_size = sizeof(rcu_slot) * shm_size;
+    auto slot_size = sizeof(rcu_slot) + shm_size;
 
     chunk.UserVA = slot_va;
     chunk.UserSize = slot_size;
@@ -438,6 +446,8 @@ bool KernelSharedMemory::ProcessEvents(long long int wait_time) {
       ShutdownImmediately();
       return false;
     }
+  } else {
+    YieldProcessor();
   }
 
   return true;
@@ -450,8 +460,8 @@ bool KernelSharedMemory::ShutdownImmediately() {
   auto rs = m_chunks[0].Get<struct rcu_shared>();
   if (!rs)
     return false;
-  m_chunks.clear();
   InterlockedExchange(&rs->opened_by_kernel, 0);
+  m_chunks.clear();
 
   ::CloseProcess(&m_pep, &m_obj);
   m_pep = nullptr;
@@ -482,16 +492,15 @@ bool KernelSharedMemory::ReadData(const eastl::function<void(void*)> & read_call
 
     long long int gen_before = InterlockedCompareExchange64(&slot->generation, 0, 0);
     ::memcpy(m_read_buffer, &slot->data[0], m_shm_size);
-    // Memory Barrier / Fence ?
-
+    //KeMemoryBarrier();
     long long int gen_after = InterlockedCompareExchange64(&slot->generation, 0, 0);
+
     if (gen_before == gen_after && (gen_before & 1) == 0) {
       read_callback(m_read_buffer);
       return true;
     }
 
-    LARGE_INTEGER wait = {.QuadPart = (-1LL) * 100LL};
-    KeDelayExecutionThread(KernelMode, TRUE, &wait);
+    YieldProcessor();
   }
 
   return true;
@@ -507,13 +516,13 @@ bool KernelSharedMemory::WriteData(const eastl::function<void(void*)> & write_ca
   auto slot = Get<struct rcu_slot>(rcu_shared->slots_memory[next]);
   if (!slot)
     return false;
-  InterlockedIncrement64(&slot->generation);
 
-  // Memory Barrier / Fence ?
+  InterlockedIncrement64(&slot->generation);
+  //KeMemoryBarrier();
   write_callback(&slot->data[0]);
-  // Memory Barrier / Fence ?
-
+  //KeMemoryBarrier();
   InterlockedIncrement64(&slot->generation);
+
   InterlockedExchange64(&rcu_shared->active, next);
 
   return true;
