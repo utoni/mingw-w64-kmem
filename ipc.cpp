@@ -21,13 +21,31 @@ extern "C" {
     unsigned char data[0];
   };
 
-  struct rcu_shared {
+  struct shmem {
     uint8_t magic[magic_size];
     volatile long int opened_by_kernel;
     volatile long int user_wants_shutdown;
-    volatile long long int active;
+    struct {
+      volatile long long int active;
+    } rcu_buffer;
+    struct {
+      volatile long long int write_index;
+    } rcu_ring;
     struct rcu_slot* slots_memory[0];
   };
+
+  static inline struct shmem *
+  GetSharedMemory(void * const memory) {
+    return reinterpret_cast<struct shmem*>(memory);
+  }
+
+  static inline size_t GetSharedMemorySize(size_t rcu_slots) {
+    return sizeof(struct shmem) + sizeof(struct rcu_slot*) * rcu_slots;
+  }
+
+  static inline size_t GetSlotSize(size_t data_size) {
+    return sizeof(struct rcu_slot) + data_size;
+  }
 
 #ifdef BUILD_USERMODE
   #include <signal.h>
@@ -146,19 +164,19 @@ UserSharedMemory::UserSharedMemory() : m_shm_size{0}, m_slots{0}, m_memory{nullp
 }
 
 UserSharedMemory::~UserSharedMemory() {
-  auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
-  ::memset(rcu_shared->magic, 0x00, magic_size); // Kernel should not find this shared memory anymore!
+  auto shmem = GetSharedMemory(m_memory);
+  ::memset(shmem->magic, 0x00, magic_size); // Kernel should not find this shared memory anymore!
   RequestShutdown();
   while (OpenedByKernel())
     ::Sleep(100);
   DeleteExceptionHandler();
-  ::VirtualFree(m_read_buffer, sizeof(struct rcu_slot) + m_shm_size, MEM_RELEASE);
+  ::VirtualFree(m_read_buffer, GetSlotSize(m_shm_size), MEM_RELEASE);
   m_read_buffer = nullptr;
   for (auto i = 0; i < m_slots; ++i) {
-    ::VirtualFree(rcu_shared->slots_memory[i], sizeof(struct rcu_slot) + m_shm_size, MEM_RELEASE);
-    rcu_shared->slots_memory[i] = nullptr;
+    ::VirtualFree(shmem->slots_memory[i], GetSlotSize(m_shm_size), MEM_RELEASE);
+    shmem->slots_memory[i] = nullptr;
   }
-  ::VirtualFree(m_memory, sizeof(struct rcu_shared) + sizeof(struct rcu_slot*) * m_slots, MEM_RELEASE);
+  ::VirtualFree(m_memory, GetSharedMemorySize(m_slots), MEM_RELEASE);
   m_memory = nullptr;
 }
 
@@ -169,64 +187,65 @@ bool UserSharedMemory::Allocate(std::size_t shm_size, std::size_t slots) {
     return false;
   SetupSignalHandler();
 
-  m_memory = ::VirtualAlloc(NULL, sizeof(struct rcu_shared) + sizeof(struct rcu_slot*) * slots,
+  m_memory = ::VirtualAlloc(NULL, GetSharedMemorySize(slots),
                             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
   if (!m_memory)
     return false;
 
-  auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
+  auto shmem = GetSharedMemory(m_memory);
   m_shm_size = shm_size;
   m_slots = slots;
-  rcu_shared->opened_by_kernel = 0;
-  rcu_shared->user_wants_shutdown = 0;
-  rcu_shared->active = 0;
+  shmem->opened_by_kernel = 0;
+  shmem->user_wants_shutdown = 0;
+  shmem->rcu_buffer.active = 0;
+  shmem->rcu_ring.write_index = 0;
 
   for (auto i = 0; i < slots; ++i) {
-    rcu_shared->slots_memory[i] = reinterpret_cast<struct rcu_slot*>(::VirtualAlloc(nullptr, sizeof(struct rcu_slot) + shm_size,
-                                                                                    MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    shmem->slots_memory[i] = reinterpret_cast<struct rcu_slot*>(::VirtualAlloc(nullptr, GetSlotSize(shm_size),
+                                                                               MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
   }
   for (auto i = 0; i < slots; ++i) {
-    if (!rcu_shared->slots_memory[i])
+    if (!shmem->slots_memory[i])
       return false;
   }
 
-  m_read_buffer = ::VirtualAlloc(NULL, sizeof(struct rcu_slot) + shm_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  m_read_buffer = ::VirtualAlloc(NULL, GetSlotSize(shm_size), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
   if (!m_read_buffer)
     return false;
 
-  ::memcpy(rcu_shared->magic, magic.begin(), magic_size); // Kernel may now find this shared memory!
+  ::memcpy(shmem->magic, magic.begin(), magic_size); // Kernel may now find this shared memory!
 
   return true;
 }
 
 void UserSharedMemory::RequestShutdown() {
-  auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
-  if (rcu_shared)
-    InterlockedExchange(&rcu_shared->user_wants_shutdown, 1);
+  auto shmem = GetSharedMemory(m_memory);
+  if (shmem)
+    InterlockedExchange(&shmem->user_wants_shutdown, 1);
 }
 
 bool UserSharedMemory::OpenedByKernel() {
-  auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
-  if (rcu_shared)
-    return InterlockedCompareExchange(&rcu_shared->opened_by_kernel, 0, 0) != 0;
+  auto shmem = GetSharedMemory(m_memory);
+  if (shmem)
+    return InterlockedCompareExchange(&shmem->opened_by_kernel, 0, 0) != 0;
   return false;
 }
 
 bool UserSharedMemory::ShutdownRequested() {
-  auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
-  if (rcu_shared)
-    return InterlockedCompareExchange(&rcu_shared->user_wants_shutdown, 0, 0) != 0;
+  auto shmem = GetSharedMemory(m_memory);
+  if (shmem)
+    return InterlockedCompareExchange(&shmem->user_wants_shutdown, 0, 0) != 0;
   return false;
 }
 
 bool UserSharedMemory::ReadData(const eastl::function<void(void*)> & read_callback) {
-  auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
-  if (!rcu_shared)
+  auto shmem = GetSharedMemory(m_memory);
+  if (!shmem)
     return false;
 
   for (;;) {
-    long int active = InterlockedCompareExchange64(&rcu_shared->active, 0, 0);
-    struct rcu_slot* slot = rcu_shared->slots_memory[active];
+    long int active = InterlockedCompareExchange64(&shmem->rcu_buffer.active, 0, 0);
+    struct rcu_slot* slot = shmem->slots_memory[active];
     if (!slot)
       return false;
 
@@ -245,13 +264,13 @@ bool UserSharedMemory::ReadData(const eastl::function<void(void*)> & read_callba
 }
 
 bool UserSharedMemory::WriteData(const eastl::function<void(void*)> & write_callback) {
-  auto rcu_shared = reinterpret_cast<struct rcu_shared*>(m_memory);
-  if (!rcu_shared)
+  auto shmem = GetSharedMemory(m_memory);
+  if (!shmem)
     return false;
 
-  long long int active = InterlockedCompareExchange64(&rcu_shared->active, 0, 0);
+  long long int active = InterlockedCompareExchange64(&shmem->rcu_buffer.active, 0, 0);
   long long int next = (active + 1) % m_slots;
-  struct rcu_slot* slot = rcu_shared->slots_memory[next];
+  struct rcu_slot* slot = shmem->slots_memory[next];
 
   InterlockedIncrement64(&slot->generation);
   _ReadWriteBarrier();
@@ -259,7 +278,7 @@ bool UserSharedMemory::WriteData(const eastl::function<void(void*)> & write_call
   _ReadWriteBarrier();
   InterlockedIncrement64(&slot->generation);
 
-  InterlockedExchange64(&rcu_shared->active, next);
+  InterlockedExchange64(&shmem->rcu_buffer.active, next);
 
   return true;
 }
@@ -393,20 +412,20 @@ bool KernelSharedMemory::FindSharedMemory(std::size_t shm_size, std::size_t slot
 
   Chunk chunk;
   chunk.UserVA = results[0].BaseAddress + results[0].Offset;
-  chunk.UserSize = sizeof(struct rcu_shared) + sizeof(struct rcu_slot*) * slots;
+  chunk.UserSize = GetSharedMemorySize(slots);
   if (!chunk.MapToSystem(m_pep))
     return false;
 
-  auto rs = chunk.Get<struct rcu_shared>();
-  if (!rs)
+  auto shmem = chunk.Get<struct shmem>();
+  if (!shmem)
     return false;
-  InterlockedExchange(&rs->opened_by_kernel, 1);
+  InterlockedExchange(&shmem->opened_by_kernel, 1);
 
   m_chunks.emplace_back(std::move(chunk));
 
   for (auto slot_index = 0; slot_index < slots; ++slot_index) {
-    auto slot_va = reinterpret_cast<uint64_t>(rs->slots_memory[slot_index]);
-    auto slot_size = sizeof(rcu_slot) + shm_size;
+    auto slot_va = reinterpret_cast<uint64_t>(shmem->slots_memory[slot_index]);
+    auto slot_size = GetSlotSize(shm_size);
 
     chunk.UserVA = slot_va;
     chunk.UserSize = slot_size;
@@ -425,12 +444,12 @@ bool KernelSharedMemory::ProcessEvents(long long int wait_time) {
   if (m_chunks.size() < 1)
     return false;
 
-  auto rs = m_chunks[0].Get<struct rcu_shared>();
-  if (!rs)
+  auto shmem = m_chunks[0].Get<struct shmem>();
+  if (!shmem)
     return false;
 
   {
-    auto user_wants_shutdown = InterlockedCompareExchange(&rs->user_wants_shutdown, 0, 0);
+    auto user_wants_shutdown = InterlockedCompareExchange(&shmem->user_wants_shutdown, 0, 0);
     if (user_wants_shutdown != 0) {
       ShutdownImmediately();
       return false;
@@ -441,7 +460,7 @@ bool KernelSharedMemory::ProcessEvents(long long int wait_time) {
     LARGE_INTEGER wait = {.QuadPart = (-1LL) * (wait_time)};
     KeDelayExecutionThread(KernelMode, FALSE, &wait);
 
-    auto user_wants_shutdown = InterlockedCompareExchange(&rs->user_wants_shutdown, 0, 0);
+    auto user_wants_shutdown = InterlockedCompareExchange(&shmem->user_wants_shutdown, 0, 0);
     if (user_wants_shutdown != 0) {
       ShutdownImmediately();
       return false;
@@ -457,10 +476,10 @@ bool KernelSharedMemory::ShutdownImmediately() {
   if (!m_pep || !m_obj || m_chunks.size() < 1)
     return false;
 
-  auto rs = m_chunks[0].Get<struct rcu_shared>();
-  if (!rs)
+  auto shmem = m_chunks[0].Get<struct shmem>();
+  if (!shmem)
     return false;
-  InterlockedExchange(&rs->opened_by_kernel, 0);
+  InterlockedExchange(&shmem->opened_by_kernel, 0);
   m_chunks.clear();
 
   ::CloseProcess(&m_pep, &m_obj);
@@ -480,13 +499,13 @@ void* KernelSharedMemory::GetByUserVA(void* user_va) {
 }
 
 bool KernelSharedMemory::ReadData(const eastl::function<void(void*)> & read_callback) {
-  auto rcu_shared = m_chunks[0].Get<struct rcu_shared>();
-  if (!rcu_shared)
+  auto shmem = m_chunks[0].Get<struct shmem>();
+  if (!shmem)
     return false;
 
   for (;;) {
-    const auto active = InterlockedCompareExchange64(&rcu_shared->active, 0, 0);
-    auto slot = Get<struct rcu_slot>(rcu_shared->slots_memory[active]);
+    const auto active = InterlockedCompareExchange64(&shmem->rcu_buffer.active, 0, 0);
+    auto slot = Get<struct rcu_slot>(shmem->slots_memory[active]);
     if (!slot)
       return false;
 
@@ -507,13 +526,13 @@ bool KernelSharedMemory::ReadData(const eastl::function<void(void*)> & read_call
 }
 
 bool KernelSharedMemory::WriteData(const eastl::function<void(void*)> & write_callback) {
-  auto rcu_shared = m_chunks[0].Get<struct rcu_shared>();
-  if (!rcu_shared)
+  auto shmem = m_chunks[0].Get<struct shmem>();
+  if (!shmem)
     return false;
 
-  const auto active = InterlockedCompareExchange64(&rcu_shared->active, 0, 0);
+  const auto active = InterlockedCompareExchange64(&shmem->rcu_buffer.active, 0, 0);
   const auto next = (active + 1) % m_slots;
-  auto slot = Get<struct rcu_slot>(rcu_shared->slots_memory[next]);
+  auto slot = Get<struct rcu_slot>(shmem->slots_memory[next]);
   if (!slot)
     return false;
 
@@ -523,7 +542,7 @@ bool KernelSharedMemory::WriteData(const eastl::function<void(void*)> & write_ca
   //KeMemoryBarrier();
   InterlockedIncrement64(&slot->generation);
 
-  InterlockedExchange64(&rcu_shared->active, next);
+  InterlockedExchange64(&shmem->rcu_buffer.active, next);
 
   return true;
 }

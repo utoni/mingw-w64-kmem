@@ -1,6 +1,7 @@
 #ifndef USERMODE_IPC_H
 #define USERMODE_IPC_H 1
 
+// Common example header used by driver-kmem.cpp and usermode-ipc.cpp
 extern "C" {
 #include <stdint.h>
 

@@ -256,29 +256,26 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
             DbgPrint("IPC Memory chunks: %zu\n", km.AmountOfChunks());
 
             uint8_t alpha_shift = 0;
-            uint32_t user_data = 0;
             while (km.ProcessEvents(10000LL) != false
                    && shutdown_event.Wait(-1LL) == STATUS_TIMEOUT)
             {
-              auto success = km.WriteData([&alpha_shift, &user_data](void* data) {
+              auto success = km.ReadData([](void* data) {
                 auto slot_data = reinterpret_cast<struct my_slot_data*>(data);
-                if (user_data != 0)
-                  user_data = slot_data->user_data = 0;
+                if (slot_data->user_data != 0)
+                  DbgPrint("User data changed to: %X\n", slot_data->user_data);
+              });
+              if (!success) {
+                DbgPrint("Shared memory read failed!\n");
+                break;
+              }
+
+              success = km.WriteData([&alpha_shift](void* data) {
+                auto slot_data = reinterpret_cast<struct my_slot_data*>(data);
+                slot_data->user_data = 0;
                 ::memset(slot_data->kernel_data, 0x41 + (alpha_shift++ % 16), sizeof(slot_data->kernel_data));
               });
               if (!success) {
                 DbgPrint("Shared memory write failed!\n");
-                break;
-              }
-
-              success = km.ReadData([&user_data](void* data) {
-                auto slot_data = reinterpret_cast<struct my_slot_data*>(data);
-                user_data = slot_data->user_data;
-                if (user_data != 0)
-                  DbgPrint("User data changed to: %X\n", user_data);
-              });
-              if (!success) {
-                DbgPrint("Shared memory read failed!\n");
                 break;
               }
             }
