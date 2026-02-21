@@ -5,18 +5,23 @@
 extern "C" {
 #include <stdint.h>
 
-#define USERMODE_IPC_SLOTS 3
+#define USERMODE_BUFFER_SLOTS 3
+#define USERMODE_RINGBUFFER_SLOTS 128
 
-struct my_slot_data {
+struct my_buffer_data {
   uint32_t user_data;
   union {
     uint32_t first_bytes;
-    uint8_t kernel_data[60];
+    uint8_t kernel_data[65536];
     struct {
-      uint8_t unused[56];
+      uint8_t unused[65532];
       uint32_t last_bytes;
     };
   };
+};
+
+struct my_ringbuffer_data {
+  uint8_t tmp;
 };
 };
 

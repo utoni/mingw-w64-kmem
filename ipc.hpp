@@ -10,6 +10,14 @@
 #include "memory.hpp"
 
 namespace IPC {
+struct RcuOpts {
+  std::size_t DataSize = 0;
+  std::size_t Slots = 0;
+};
+
+using DataReadCallback = eastl::function<void(void* data, uint64_t retries)>;
+using DataWriteCallback = eastl::function<void(void* data)>;
+
 #ifdef BUILD_USERMODE
 class UserSharedMemory {
 public:
@@ -20,20 +28,25 @@ public:
   UserSharedMemory& operator=(UserSharedMemory &&) = delete;
   UserSharedMemory& operator=(const UserSharedMemory &) = delete;
 
-  bool Allocate(std::size_t shm_size, std::size_t slots);
+  bool Allocate(const RcuOpts & buffer_opts, const RcuOpts & ringbuffer_opts);
   void RequestShutdown();
   bool OpenedByKernel();
   bool ShutdownRequested();
-  bool ReadData(const eastl::function<void(void*)> & read_callback);
-  bool WriteData(const eastl::function<void(void*)> & write_callback);
+  bool ReadBufferData(const DataReadCallback & read_callback);
+  bool WriteBufferData(const DataWriteCallback & write_callback);
+  bool ReadRingbufferData(const DataReadCallback & read_callback);
 
 private:
-  std::size_t m_shm_size;
-  std::size_t m_slots;
+  RcuOpts m_rcu_buffer;
+  RcuOpts m_rcu_ringbuffer;
   void* m_memory;
   void* m_read_buffer;
+  void* m_read_ringbuffer;
+  long long int m_last_ringbuffer_read;
 };
+
 #else
+
 class KernelSharedMemory {
 private:
   struct Chunk {
@@ -62,7 +75,7 @@ public:
   ~KernelSharedMemory();
   KernelSharedMemory& operator=(KernelSharedMemory &&) = delete;
   KernelSharedMemory& operator=(const KernelSharedMemory &) = delete;
-  bool FindSharedMemory(std::size_t shm_size, std::size_t slots,
+  bool FindSharedMemory(const RcuOpts & buffer_opts, const RcuOpts & ringbuffer_opts,
                         const Process& target_proc);
   bool ProcessEvents(long long int wait_time = 0);
   /*
@@ -73,19 +86,20 @@ public:
    */
   bool ShutdownImmediately();
   std::size_t AmountOfChunks() { return m_chunks.size(); }
-  bool ReadData(const eastl::function<void(void*)> & read_callback);
-  bool WriteData(const eastl::function<void(void*)> & write_callback);
+  bool ReadBufferData(const DataReadCallback & read_callback);
+  bool WriteBufferData(const DataWriteCallback & write_callback);
+  bool WriteRingbufferData(const DataWriteCallback & write_callback);
 
 private:
   void* GetByUserVA(void* user_va);
   template <typename T>
   T* Get(void* user_va) { return reinterpret_cast<T*>(GetByUserVA(user_va)); }
 
-  std::size_t m_shm_size;
-  std::size_t m_slots;
+  RcuOpts m_rcu_buffer;
+  RcuOpts m_rcu_ringbuffer;
   PEPROCESS m_pep;
   HANDLE m_obj;
-  eastl::vector<Chunk> m_chunks;
+  eastl::vector<Chunk> m_chunks; // TODO: Use hashmap for user to system address mapping.
   uint8_t* m_read_buffer;
 };
 #endif

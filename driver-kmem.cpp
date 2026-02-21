@@ -249,28 +249,51 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
 
           __dpptry(shm_exception_handler, shm_seh) {
             IPC::KernelSharedMemory km;
-            if (!km.FindSharedMemory(sizeof(my_slot_data), USERMODE_IPC_SLOTS, *found)) {
+            if (!km.FindSharedMemory({sizeof(my_buffer_data), USERMODE_BUFFER_SLOTS},
+                                     {sizeof(my_ringbuffer_data), USERMODE_RINGBUFFER_SLOTS}, *found))
+            {
               DbgPrint("Shared Memory not found!\n");
               return STATUS_SUCCESS;
             }
             DbgPrint("IPC Memory chunks: %zu\n", km.AmountOfChunks());
 
             uint8_t alpha_shift = 0;
-            while (km.ProcessEvents(10000LL) != false
+            uint64_t iterations = 0;
+            uint64_t data_changes = 0;
+            uint64_t total_elapsed_ms = 0;
+            while (km.ProcessEvents(0LL) != false
                    && shutdown_event.Wait(-1LL) == STATUS_TIMEOUT)
             {
-              auto success = km.ReadData([](void* data) {
-                auto slot_data = reinterpret_cast<struct my_slot_data*>(data);
+              iterations++;
+
+              LARGE_INTEGER start, end, elapsed_us, frequency;
+              start = KeQueryPerformanceCounter(&frequency);
+
+              auto success = km.ReadBufferData([&data_changes](void* data, uint64_t retries) {
+                auto slot_data = reinterpret_cast<struct my_buffer_data*>(data);
                 if (slot_data->user_data != 0)
-                  DbgPrint("User data changed to: %X\n", slot_data->user_data);
+                  data_changes++;
+                if (retries > 0)
+                  DbgPrint("Retries: %llu\n", retries);
               });
               if (!success) {
                 DbgPrint("Shared memory read failed!\n");
                 break;
               }
+              if ((iterations % 1000) == 0) {
+                float iter_per_sec = (float)total_elapsed_ms / 1000.0f;
+                iter_per_sec = 1000.0f / iter_per_sec;
+                DbgPrint("Iterations: %llu (%llus elapsed, %llu/s)\n", iterations,
+                         total_elapsed_ms / 1000, (uint64_t)iter_per_sec);
+                total_elapsed_ms = 0;
+              }
+              if ((data_changes % 1000) == 0) {
+                DbgPrint("User data changed %llu times (%llu iterations)\n",
+                         data_changes, iterations);
+              }
 
-              success = km.WriteData([&alpha_shift](void* data) {
-                auto slot_data = reinterpret_cast<struct my_slot_data*>(data);
+              success = km.WriteBufferData([&alpha_shift](void* data) {
+                auto slot_data = reinterpret_cast<struct my_buffer_data*>(data);
                 slot_data->user_data = 0;
                 ::memset(slot_data->kernel_data, 0x41 + (alpha_shift++ % 16), sizeof(slot_data->kernel_data));
               });
@@ -278,6 +301,21 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
                 DbgPrint("Shared memory write failed!\n");
                 break;
               }
+
+              success = km.WriteRingbufferData([](void* data) {
+                  auto slot_data = reinterpret_cast<struct my_ringbuffer_data*>(data);
+                  slot_data->tmp++;
+              });
+              if (!success) {
+                DbgPrint("Shared memory (Ringbuffer) write failed!\n");
+                break;
+              }
+
+              end = KeQueryPerformanceCounter(NULL);
+              elapsed_us.QuadPart = end.QuadPart - start.QuadPart;
+              elapsed_us.QuadPart *= 1000000;
+              elapsed_us.QuadPart /= frequency.QuadPart;
+              total_elapsed_ms += elapsed_us.QuadPart;
             }
           } __dppexcept(shm_seh) { return STATUS_UNSUCCESSFUL; }
           __dpptryend(shm_seh);
