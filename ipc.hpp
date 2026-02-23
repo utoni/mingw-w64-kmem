@@ -32,6 +32,7 @@ public:
   void RequestShutdown();
   bool OpenedByKernel();
   bool ShutdownRequested();
+  long long int GetLastRingRead() { return m_last_ringbuffer_read; }
   bool ReadBufferData(const DataReadCallback & read_callback);
   bool WriteBufferData(const DataWriteCallback & write_callback);
   bool ReadRingbufferData(const DataReadCallback & read_callback);
@@ -77,7 +78,7 @@ public:
   KernelSharedMemory& operator=(const KernelSharedMemory &) = delete;
   bool FindSharedMemory(const RcuOpts & buffer_opts, const RcuOpts & ringbuffer_opts,
                         const Process& target_proc);
-  bool ProcessEvents(long long int wait_time = 0);
+  bool ProcessEvents(long long int wait_time = 0LL);
   /*
    * Do not forget to call this method **manually**, but at least **before** the user process terminates!
    * Termination may happen via a window message i.e. WM_CLOSE, via a signal i.e. SIGTERM or an exception.

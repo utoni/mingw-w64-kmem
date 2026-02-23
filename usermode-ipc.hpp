@@ -21,7 +21,8 @@ struct my_buffer_data {
 };
 
 struct my_ringbuffer_data {
-  uint8_t tmp;
+  uint64_t inc;
+  char str[256];
 };
 };
 

@@ -302,9 +302,11 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
                 break;
               }
 
-              success = km.WriteRingbufferData([](void* data) {
+              eastl::string str = "The amount of iterations: " + ::to_string(iterations);
+              success = km.WriteRingbufferData([&str](void* data) {
                   auto slot_data = reinterpret_cast<struct my_ringbuffer_data*>(data);
-                  slot_data->tmp++;
+                  slot_data->inc++;
+                  ::memcpy(slot_data->str, str.c_str(), MIN(sizeof(slot_data->str), str.length()));
               });
               if (!success) {
                 DbgPrint("Shared memory (Ringbuffer) write failed!\n");

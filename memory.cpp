@@ -16,8 +16,6 @@
 #define WINDOWS_21H1 20180
 #define WINDOWS_22H2 19045
 
-#define MIN(a, b) (a < b ? a : b)
-
 extern "C" {
 NTSTATUS NTAPI WrapperObOpenObjectByPointer(
     _In_ PVOID obj, _In_ ULONG HandleAttributes,

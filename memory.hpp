@@ -13,6 +13,8 @@
 
 #include "stringify.hpp"
 
+#define MIN(a, b) (a < b ? a : b)
+
 struct Process {
   uint32_t NumberOfThreads;
   eastl::wstring ProcessName;

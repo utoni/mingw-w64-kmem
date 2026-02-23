@@ -564,8 +564,6 @@ bool KernelSharedMemory::ProcessEvents(long long int wait_time) {
     }
   } else if (wait_time > 0LL) {
     KeStallExecutionProcessor(wait_time);
-  } else {
-    ZwYieldExecution();
   }
 
   return true;
