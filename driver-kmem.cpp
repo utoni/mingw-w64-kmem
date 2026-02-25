@@ -12,6 +12,8 @@ using namespace DriverThread;
 
 static Thread thread;
 static Event shutdown_event;
+static Event ipc_event;
+static ExTimer timer;
 
 extern "C" {
 DRIVER_INITIALIZE DriverEntry;
@@ -230,6 +232,10 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
           ::CloseProcess(&pep, &obj);
         }
 
+        timer.Start([]() {
+            ipc_event.Notify();
+        }, -16666, true, true);
+
         {
           const auto &procs = ::GetProcesses();
           DbgPrint("Got %zu processes on this machine\n", procs.size());
@@ -260,14 +266,14 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
             uint8_t alpha_shift = 0;
             uint64_t iterations = 0;
             uint64_t data_changes = 0;
-            uint64_t total_elapsed_ms = 0;
+            PerformanceCounter perf;
+            perf.Start();
             while (km.ProcessEvents(0LL) != false
-                   && shutdown_event.Wait(-1LL) == STATUS_TIMEOUT)
+                   && ipc_event.WaitIndefinitely() == STATUS_SUCCESS
+                   && shutdown_event.Wait(0LL) == STATUS_TIMEOUT)
             {
+              ipc_event.Reset();
               iterations++;
-
-              LARGE_INTEGER start, end, elapsed_us, frequency;
-              start = KeQueryPerformanceCounter(&frequency);
 
               auto success = km.ReadBufferData([&data_changes](void* data, uint64_t retries) {
                 auto slot_data = reinterpret_cast<struct my_buffer_data*>(data);
@@ -281,11 +287,11 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
                 break;
               }
               if ((iterations % 1000) == 0) {
-                float iter_per_sec = (float)total_elapsed_ms / 1000.0f;
-                iter_per_sec = 1000.0f / iter_per_sec;
-                DbgPrint("Iterations: %llu (%llus elapsed, %llu/s)\n", iterations,
-                         total_elapsed_ms / 1000, (uint64_t)iter_per_sec);
-                total_elapsed_ms = 0;
+                perf.Stop();
+                const auto iter_per_ms = perf.MeasureElapsedMs(iterations);
+                DbgPrint("Iterations: %llu (%llu/s)\n", iterations, iter_per_ms);
+                iterations = 0;
+                perf.Start();
               }
               if ((data_changes % 1000) == 0) {
                 DbgPrint("User data changed %llu times (%llu iterations)\n",
@@ -312,12 +318,6 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
                 DbgPrint("Shared memory (Ringbuffer) write failed!\n");
                 break;
               }
-
-              end = KeQueryPerformanceCounter(NULL);
-              elapsed_us.QuadPart = end.QuadPart - start.QuadPart;
-              elapsed_us.QuadPart *= 1000000;
-              elapsed_us.QuadPart /= frequency.QuadPart;
-              total_elapsed_ms += elapsed_us.QuadPart;
             }
           } __dppexcept(shm_seh) { return STATUS_UNSUCCESSFUL; }
           __dpptryend(shm_seh);
