@@ -4,71 +4,55 @@ endif
 
 include $(DPP_ROOT)/Makefile.inc
 
-COMMON_HEADERS = native.h memory.hpp ipc.hpp
+COMMON_HEADERS = native.h memory.hpp ipc.hpp stringify.hpp
 COMMON_OBJECTS = memory.o ipc.o
 COMMON_OBJECTS_USER = ipc-user.o
 CFLAGS_ipc-user.o = -DBUILD_USERMODE=1
 COMMON_OBJECTS_EXPERIMENTAL = memory-experimental.o ipc.o
 CFLAGS_memory-experimental.o = -DENABLE_EXPERIMENTAL=1
+LIBKMEM = libkmem.a
+LIBKMEM_EXP = libkmem-experimental.a
+LIBKMEM_USER = libkmem-user.a
 
-DRIVER_NAME = driver-kmem
-DRIVER_OBJECTS = $(DRIVER_NAME).o $(COMMON_OBJECTS_EXPERIMENTAL)
-DRIVER_TARGET = $(DRIVER_NAME).sys
-CFLAGS_driver-kmem.o = -DENABLE_EXPERIMENTAL=1
+all: $(LIBKMEM) $(LIBKMEM_EXP) $(LIBKMEM_USER)
 
-UMODE_IPC_NAME = usermode-ipc
-UMODE_IPC_OBJECTS = $(UMODE_IPC_NAME).o $(COMMON_OBJECTS_USER)
-UMODE_IPC_TARGET = $(UMODE_IPC_NAME).exe
-CFLAGS_usermode-ipc.o = -DBUILD_USERMODE=1
+examples:
+	$(MAKE) -C examples DPP_ROOT=$(realpath $(DPP_ROOT)) KMEM_ROOT=$(realpath .) all
 
-TARKOV_NAME = tfk
-TARKOV_OBJECTS = tarkov.o $(COMMON_OBJECTS)
-TARKOV_TARGET = $(TARKOV_NAME).sys
+examples-clean:
+	$(MAKE) -C examples DPP_ROOT=$(realpath $(DPP_ROOT)) KMEM_ROOT=$(realpath .) clean
 
-HUNT_NAME = ht
-HUNT_OBJECTS = hunt.o $(COMMON_OBJECTS)
-HUNT_TARGET = $(HUNT_NAME).sys
+examples-install:
+	$(MAKE) -C examples DPP_ROOT=$(realpath $(DPP_ROOT)) KMEM_ROOT=$(realpath .) install
 
-HUNT1896_NAME = ht2
-HUNT1896_OBJECTS = hunt2.o $(COMMON_OBJECTS)
-HUNT1896_TARGET = $(HUNT1896_NAME).sys
+$(LIBKMEM): $(COMMON_OBJECTS)
+ifneq ($(Q),@)
+	$(Q)$(AR) -rsv '$@' $(COMMON_OBJECTS)
+else
+	$(Q)$(AR) -rs '$@' $(COMMON_OBJECTS) 2>/dev/null >/dev/null
+endif
+	@echo 'AR  $@'
 
-HUNT1896_DBG_NAME = ht2_dbg
-HUNT1896_DBG_OBJECTS = hunt2_dbg.o $(COMMON_OBJECTS)
-HUNT1896_DBG_TARGET = $(HUNT1896_DBG_NAME).sys
-CFLAGS_hunt2_dbg.o = -DHUNT2_DEBUG=1
+$(LIBKMEM_EXP): $(COMMON_OBJECTS_EXPERIMENTAL)
+ifneq ($(Q),@)
+	$(Q)$(AR) -rsv '$@' $(COMMON_OBJECTS_EXPERIMENTAL)
+else
+	$(Q)$(AR) -rs '$@' $(COMMON_OBJECTS_EXPERIMENTAL) 2>/dev/null >/dev/null
+endif
+	@echo 'AR  $@'
 
-BF4_NAME = bf4
-BF4_OBJECTS = bf4.o $(COMMON_OBJECTS)
-BF4_TARGET = $(BF4_NAME).sys
+$(LIBKMEM_USER): $(COMMON_OBJECTS_USER)
+ifneq ($(Q),@)
+	$(Q)$(AR) -rsv '$@' $(COMMON_OBJECTS_USER)
+else
+	$(Q)$(AR) -rs '$@' $(COMMON_OBJECTS_USER) 2>/dev/null >/dev/null
+endif
+	@echo 'AR  $@'
 
-all: $(DRIVER_TARGET) $(UMODE_IPC_TARGET) $(TARKOV_TARGET) $(HUNT_TARGET) $(HUNT1896_TARGET) $(HUNT1896_DBG_TARGET) $(BF4_TARGET)
-
-install: $(DRIVER_TARGET) $(UMODE_IPC_TARGET) $(TARKOV_TARGET) $(HUNT_TARGET) $(HUNT1896_TARGET) $(HUNT1896_DBG_TARGET) $(BF4_TARGET)
-	$(call INSTALL_EXEC_SIGN,$(DRIVER_TARGET))
-	$(CP) $(DRIVER_NAME).bat $(DESTDIR)
-	$(CP) $(UMODE_IPC_TARGET) $(DESTDIR)
-	$(call INSTALL_EXEC_SIGN,$(TARKOV_TARGET))
-	$(CP) $(TARKOV_NAME).bat $(DESTDIR)
-	$(call INSTALL_EXEC_SIGN,$(HUNT_TARGET))
-	$(CP) $(HUNT_NAME).bat $(DESTDIR)
-	$(call INSTALL_EXEC_SIGN,$(HUNT1896_TARGET))
-	$(CP) $(HUNT1896_DBG_NAME).bat $(DESTDIR)
-	$(call INSTALL_EXEC_SIGN,$(HUNT1896_DBG_TARGET))
-	$(CP) $(HUNT1896_NAME).bat $(DESTDIR)
-	$(call INSTALL_EXEC_SIGN,$(BF4_TARGET))
-	$(CP) $(BF4_NAME).bat $(DESTDIR)
-
-clean:
-	rm -f $(COMMON_OBJECTS)
-	rm -f $(COMMON_OBJECTS_EXPERIMENTAL)
-	rm -f $(DRIVER_OBJECTS) $(DRIVER_TARGET)
-	rm -f $(UMODE_IPC_OBJECTS) $(UMODE_IPC_TARGET)
-	rm -f $(TARKOV_OBJECTS) $(TARKOV_TARGET)
-	rm -f $(HUNT_OBJECTS) $(HUNT_TARGET)
-	rm -f $(HUNT1896_OBJECTS) $(HUNT1896_TARGET)
-	rm -f $(HUNT1896_DBG_OBJECTS) $(HUNT1896_DBG_TARGET)
-	rm -f $(BF4_OBJECTS) $(BF4_TARGET)
+clean: examples-clean
+	rm -f $(LIBKMEM) $(COMMON_OBJECTS)
+	rm -f $(LIBKMEM_EXP) $(COMMON_OBJECTS_EXPERIMENTAL)
+	rm -f $(LIBKMEM_USER) $(COMMON_OBJECTS_USER)
 
 ipc-user.o: ipc.cpp
 	$(call BUILD_CPP_OBJECT,$<,$@)
@@ -76,33 +60,9 @@ ipc-user.o: ipc.cpp
 memory-experimental.o: memory.cpp
 	$(call BUILD_CPP_OBJECT,$<,$@)
 
-hunt2_dbg.o: hunt2.cpp
-	$(call BUILD_CPP_OBJECT,$<,$@)
-
 %.o: %.cpp $(COMMON_HEADERS)
 	$(call BUILD_CPP_OBJECT,$<,$@)
 
-$(DRIVER_TARGET): $(DRIVER_OBJECTS)
-	$(call LINK_CPP_KERNEL_TARGET,$(DRIVER_OBJECTS),$@)
-
-$(UMODE_IPC_TARGET): $(UMODE_IPC_OBJECTS)
-	$(call LINK_CPP_USER_TARGET,$(UMODE_IPC_OBJECTS),$@)
-
-$(TARKOV_TARGET): $(TARKOV_OBJECTS)
-	$(call LINK_CPP_KERNEL_TARGET,$(TARKOV_OBJECTS),$@)
-
-$(HUNT_TARGET): $(HUNT_OBJECTS)
-	$(call LINK_CPP_KERNEL_TARGET,$(HUNT_OBJECTS),$@)
-
-$(HUNT1896_TARGET): $(HUNT1896_OBJECTS)
-	$(call LINK_CPP_KERNEL_TARGET,$(HUNT1896_OBJECTS),$@)
-
-$(HUNT1896_DBG_TARGET): $(HUNT1896_DBG_OBJECTS)
-	$(call LINK_CPP_KERNEL_TARGET,$(HUNT1896_DBG_OBJECTS),$@)
-
-$(BF4_TARGET): $(BF4_OBJECTS)
-	$(call LINK_CPP_KERNEL_TARGET,$(BF4_OBJECTS),$@)
-
-.NOTPARALLEL: all install clean
-.PHONY: all install clean
+.NOTPARALLEL: all clean
+.PHONY: all clean examples examples-clean examples-install
 .DEFAULT_GOAL := all
