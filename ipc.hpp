@@ -29,6 +29,8 @@ public:
   UserSharedMemory& operator=(const UserSharedMemory &) = delete;
 
   bool Allocate(const RcuOpts & buffer_opts, const RcuOpts & ringbuffer_opts);
+  bool Deallocate();
+  bool IsAllocated() { return m_memory; }
   void RequestShutdown();
   bool OpenedByKernel();
   bool ShutdownRequested();

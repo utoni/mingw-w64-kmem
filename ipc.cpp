@@ -179,31 +179,7 @@ UserSharedMemory::UserSharedMemory()
 }
 
 UserSharedMemory::~UserSharedMemory() {
-  auto shmem = GetSharedMemory(m_memory);
-  if (!shmem)
-    return;
-
-  ::memset(shmem->magic, 0x00, magic_size); // Kernel should not find this shared memory anymore!
-
-  RequestShutdown();
-  while (OpenedByKernel())
-    ::Sleep(100);
-  DeleteExceptionHandler();
-
-  ::VirtualFree(m_read_ringbuffer, GetSlotSize(m_rcu_ringbuffer.DataSize), MEM_RELEASE);
-  m_read_ringbuffer = nullptr;
-  ::VirtualFree(m_read_buffer, GetSlotSize(m_rcu_buffer.DataSize), MEM_RELEASE);
-  m_read_buffer = nullptr;
-  for (auto i = m_rcu_buffer.Slots; i < m_rcu_buffer.Slots + m_rcu_ringbuffer.Slots; ++i) {
-    ::VirtualFree(shmem->slots_memory[i], GetSlotSize(m_rcu_ringbuffer.DataSize), MEM_RELEASE);
-    shmem->slots_memory[i] = nullptr;
-  }
-  for (auto i = 0; i < m_rcu_buffer.Slots; ++i) {
-    ::VirtualFree(shmem->slots_memory[i], GetSlotSize(m_rcu_buffer.DataSize), MEM_RELEASE);
-    shmem->slots_memory[i] = nullptr;
-  }
-  ::VirtualFree(m_memory, GetSharedMemorySize(m_rcu_buffer.Slots + m_rcu_ringbuffer.Slots), MEM_RELEASE);
-  m_memory = nullptr;
+  Deallocate();
 }
 
 bool UserSharedMemory::Allocate(const RcuOpts & buffer_opts, const RcuOpts & ringbuffer_opts) {
@@ -253,6 +229,36 @@ bool UserSharedMemory::Allocate(const RcuOpts & buffer_opts, const RcuOpts & rin
   m_rcu_ringbuffer = ringbuffer_opts;
 
   ::memcpy(shmem->magic, magic.begin(), magic_size); // Kernel may now find this shared memory!
+
+  return true;
+}
+
+bool UserSharedMemory::Deallocate() {
+  auto shmem = GetSharedMemory(m_memory);
+  if (!shmem)
+    return false;
+
+  ::memset(shmem->magic, 0x00, magic_size); // Kernel should not find this shared memory anymore!
+
+  RequestShutdown();
+  while (OpenedByKernel())
+    ::Sleep(100);
+  DeleteExceptionHandler();
+
+  ::VirtualFree(m_read_ringbuffer, GetSlotSize(m_rcu_ringbuffer.DataSize), MEM_RELEASE);
+  m_read_ringbuffer = nullptr;
+  ::VirtualFree(m_read_buffer, GetSlotSize(m_rcu_buffer.DataSize), MEM_RELEASE);
+  m_read_buffer = nullptr;
+  for (auto i = m_rcu_buffer.Slots; i < m_rcu_buffer.Slots + m_rcu_ringbuffer.Slots; ++i) {
+    ::VirtualFree(shmem->slots_memory[i], GetSlotSize(m_rcu_ringbuffer.DataSize), MEM_RELEASE);
+    shmem->slots_memory[i] = nullptr;
+  }
+  for (auto i = 0; i < m_rcu_buffer.Slots; ++i) {
+    ::VirtualFree(shmem->slots_memory[i], GetSlotSize(m_rcu_buffer.DataSize), MEM_RELEASE);
+    shmem->slots_memory[i] = nullptr;
+  }
+  ::VirtualFree(m_memory, GetSharedMemorySize(m_rcu_buffer.Slots + m_rcu_ringbuffer.Slots), MEM_RELEASE);
+  m_memory = nullptr;
 
   return true;
 }

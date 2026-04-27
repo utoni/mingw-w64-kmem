@@ -2,9 +2,14 @@ ifndef DPP_ROOT
 $(error DPP_ROOT is undefined)
 endif
 
+ifdef KMEM_ROOT
+$(error KMEM_ROOT must be undefined)
+endif
+
 include $(DPP_ROOT)/Makefile.inc
 
 COMMON_HEADERS = native.h memory.hpp ipc.hpp stringify.hpp
+COMMON_SOURCES = memory.cpp ipc.cpp
 COMMON_OBJECTS = memory.o ipc.o
 COMMON_OBJECTS_USER = ipc-user.o
 CFLAGS_ipc-user.o = -DBUILD_USERMODE=1
@@ -25,7 +30,7 @@ examples-clean:
 examples-install:
 	$(MAKE) -C examples DPP_ROOT=$(realpath $(DPP_ROOT)) KMEM_ROOT=$(realpath .) install
 
-$(LIBKMEM): $(COMMON_OBJECTS)
+$(LIBKMEM): $(COMMON_SOURCES) $(COMMON_OBJECTS)
 ifneq ($(Q),@)
 	$(Q)$(AR) -rsv '$@' $(COMMON_OBJECTS)
 else
@@ -33,7 +38,7 @@ else
 endif
 	@echo 'AR  $@'
 
-$(LIBKMEM_EXP): $(COMMON_OBJECTS_EXPERIMENTAL)
+$(LIBKMEM_EXP): $(COMMON_SOURCES) $(COMMON_OBJECTS_EXPERIMENTAL)
 ifneq ($(Q),@)
 	$(Q)$(AR) -rsv '$@' $(COMMON_OBJECTS_EXPERIMENTAL)
 else
@@ -41,7 +46,7 @@ else
 endif
 	@echo 'AR  $@'
 
-$(LIBKMEM_USER): $(COMMON_OBJECTS_USER)
+$(LIBKMEM_USER): $(COMMON_SOURCES) $(COMMON_OBJECTS_USER)
 ifneq ($(Q),@)
 	$(Q)$(AR) -rsv '$@' $(COMMON_OBJECTS_USER)
 else
