@@ -147,12 +147,12 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
 #endif
 
             Memory memory(pep);
-            auto sys_global_env = memory.Read<uint64_t>(base + 0x2293320);
+            auto sys_global_env = memory.Read<uint64_t>(base + 0x2D3F328);
 
             auto entity_system = memory.Read<uint64_t>(sys_global_env + 0xC0);
-            int16_t number_of_objects =
-                memory.Read<int16_t>(entity_system + 0x40092);
-            uint64_t entity_list = entity_system + 0x400A0;
+            auto number_of_objects =
+                memory.Read<uint16_t>(entity_system + 0x40092);
+            uint64_t entity_list = entity_system + 0x40078;
 
             for (decltype(number_of_objects) i = 0; i < number_of_objects;
                  ++i) {
@@ -161,7 +161,7 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
               if (!entity)
                 continue;
 
-              auto entity_name_ptr = memory.Read<uint64_t>(entity + 0x10);
+              auto entity_name_ptr = memory.ReadChain<uint64_t>(entity, { 0x18, 0x10 });
               char entity_name[128] = {};
               memory.ReadString<sizeof(entity_name)>(entity_name_ptr,
                                                      entity_name);
@@ -173,10 +173,6 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
                   STRNCMP_CR(entity_name, "HunterBasic") == 0 ||
                   STRNCMP_CR(entity_name, "Hunter") == 0) {
                 uint64_t color = 0x0004ffaf;
-                auto spectators = memory.ReadChain<int32_t>(entity, { 0x198, 0x20, 0xD0, 0xE8, 0x330 });
-                if (spectators > 0)
-                  color = 0x6824ffaf;
-
                 auto slots_ptr = memory.Read<uint64_t>(entity + 0xA8);
                 auto slot_ptr = memory.Read<uint64_t>(slots_ptr + 0);
                 auto render_node_ptr = memory.Read<uint64_t>(slot_ptr + 0xA0);
@@ -192,7 +188,8 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
                          STRNCMP_CR(entity_name, "spider") == 0 ||
                          STRNCMP_CR(entity_name, "grunts.specials") == 0 ||
                          STRNCMP_CR(entity_name, "butcher") == 0 ||
-                         STRNCMP_CR(entity_name, "immolater") == 0) {
+                         STRNCMP_CR(entity_name, "immolater") == 0 ||
+                         STRNCMP_CR(entity_name, "ammoswapbox") == 0) {
                 auto slots_ptr = memory.Read<uint64_t>(entity + 0xA8);
                 auto slot_ptr = memory.Read<uint64_t>(slots_ptr + 0);
                 auto render_node_ptr = memory.Read<uint64_t>(slot_ptr + 0xA0);
@@ -204,7 +201,7 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
             }
 #ifdef HUNT2_DEBUG
             if ((cur_iter % print_every) == 0) {
-              logger.Write("[DBG #{}]\n", cur_iter);
+              logger.Write("[DBG #{}][Cur Objects: {}]\n", cur_iter, number_of_objects);
               for (const auto &object : objects_found)
                 logger.Write("Object `{}' found: {} times\n", object.first,
                              object.second);
