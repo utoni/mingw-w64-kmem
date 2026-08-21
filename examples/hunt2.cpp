@@ -126,17 +126,41 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
               }
 
 #ifdef HUNT2_DEBUG
-              PatternScanner::ProcessModule scanner(
-                pep, obj, {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x8B},
-                skCrypt("xxx????xxx"));
-              PatternScanner::ResultVec results;
-              auto found = scanner.Scan(targetModule, results);
-              if (!found)
-                logger.Write("%s\n",
-                             "Pattern Scan not found or failed!");
-              for (const auto result : results)
-                logger.Write("Pattern Offset: %zu (Base + Offset: 0x%X)\n",
-                             result.Offset, result.BaseAddress + result.Offset);
+              logger.Write("%s\n", "PatternScanner");
+              Memory memory(pep);
+              // SysGlobEnvSig = "48 89 7C 24 ? E8 ? ? ? ? 48 8B 05 [? ? ? ?] 45 33 C0"
+              {
+                PatternScanner::ProcessModule scanner(
+                  pep, obj, {0x48, 0x89, 0x7C, 0x24, 0x00, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x45, 0x33, 0xC0},
+                  skCrypt("xxxx?x????xxx????xxx"));
+                PatternScanner::ResultVec results;
+                auto found = scanner.Scan(targetModule, results);
+                if (!found)
+                  logger.Write("%s\n",
+                               "(SysGEnv) Pattern Scan not found or failed!");
+                for (const auto result : results) {
+                  const auto sysgenv = memory.Read<uint64_t>(result.BaseAddress + result.Offset + 13);
+                  logger.Write("(SysGEnv) Pattern Offset: %zu (Base + Offset: 0x%X) --> 0x%X\n",
+                               result.Offset, result.BaseAddress + result.Offset, sysgenv);
+                }
+              }
+              // NoSway = "48 89 83 ? ? ? ? 48 8B 45 ? 48 89 83 ? ? ? ? 48 8b ? ? [48 89 83 ? ? ? ?]"
+              {
+                PatternScanner::ProcessModule scanner(
+                  pep, obj, {0x48, 0x89, 0x83, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x45, 0x00, 0x48, 0x89, 0x83, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x00, 0x00, 0x48, 0x89, 0x83, 0x00, 0x00, 0x00, 0x00},
+                  skCrypt("xxx????xxx?xxx????xx??xxx????"));
+                PatternScanner::ResultVec results;
+                auto found = scanner.Scan(targetModule, results);
+                if (!found)
+                  logger.Write("%s\n",
+                               "(NoSway) Pattern Scan not found or failed!");
+                for (const auto result : results) {
+                  logger.Write("(NoSway) Pattern Offset: %zu (Base + Offset: 0x%X)\n",
+                               result.Offset, result.BaseAddress + result.Offset);
+                  uint8_t nop[7] = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
+                  memory.Write(result.BaseAddress + result.Offset + 22, nop);
+                }
+              }
 #endif
             }
 
@@ -147,7 +171,7 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
 #endif
 
             Memory memory(pep);
-            auto sys_global_env = memory.Read<uint64_t>(base + 0x2D3F328);
+            auto sys_global_env = memory.Read<uint64_t>(base + 0x2827328);
 
             auto entity_system = memory.Read<uint64_t>(sys_global_env + 0xC0);
             auto number_of_objects =
