@@ -43,6 +43,14 @@ BF4_TARGET = $(BF4_NAME).sys
 all: $(DRIVER_TARGET) $(UMODE_IPC_TARGET) \
 	$(TARKOV_TARGET) $(HUNT_TARGET) $(HUNT1896_TARGET) $(HUNT1896_DBG_TARGET) $(BF4_TARGET)
 
+path_exists = \
+	$(if $(realpath $1),, \
+	$(error ERROR: $1 does not exist, run `make -C $(KMEM_ROOT) all` first.))
+
+$(call path_exists,$(LIBKMEM))
+$(call path_exists,$(LIBKMEM_EXP))
+$(call path_exists,$(LIBKMEM_USER))
+
 hunt2_dbg.o: hunt2.cpp
 	$(call BUILD_CPP_OBJECT,$<,$@)
 
@@ -86,7 +94,7 @@ install: $(DRIVER_TARGET) $(UMODE_IPC_TARGET) $(TARKOV_TARGET) $(HUNT_TARGET) $(
 	$(CP) $(BF4_NAME).bat $(DESTDIR)
 
 clean:
-	rm -f driver-kmem.o usermode-ipc.o tfk.o ht.o ht2.o ht2_dbg.o bf4.o
+	rm -f driver-kmem.o usermode-ipc.o tarkov.o hunt.o hunt2.o hunt2_dbg.o bf4.o
 	rm -f $(DRIVER_TARGET) $(DRIVER_TARGET).map
 	rm -f $(UMODE_IPC_TARGET)
 	rm -f $(TARKOV_TARGET) $(TARKOV_TARGET).map

@@ -2,10 +2,6 @@ ifndef DPP_ROOT
 $(error DPP_ROOT is undefined)
 endif
 
-ifdef KMEM_ROOT
-$(error KMEM_ROOT must be undefined)
-endif
-
 include $(DPP_ROOT)/Makefile.inc
 
 COMMON_HEADERS = native.h memory.hpp ipc.hpp stringify.hpp
