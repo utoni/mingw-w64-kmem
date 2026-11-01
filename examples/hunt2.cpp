@@ -171,7 +171,7 @@ NTSTATUS DriverEntry(_In_ struct _DRIVER_OBJECT *DriverObject,
 #endif
 
             Memory memory(pep);
-            auto sys_global_env = memory.Read<uint64_t>(base + 0x2827328);
+            auto sys_global_env = memory.Read<uint64_t>(base + 0x26022F8);
 
             auto entity_system = memory.Read<uint64_t>(sys_global_env + 0xC0);
             auto number_of_objects =

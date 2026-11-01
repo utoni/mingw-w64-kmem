@@ -245,19 +245,19 @@ bool UserSharedMemory::Deallocate() {
     ::Sleep(100);
   DeleteExceptionHandler();
 
-  ::VirtualFree(m_read_ringbuffer, GetSlotSize(m_rcu_ringbuffer.DataSize), MEM_RELEASE);
+  ::VirtualFree(m_read_ringbuffer, 0, MEM_RELEASE);
   m_read_ringbuffer = nullptr;
-  ::VirtualFree(m_read_buffer, GetSlotSize(m_rcu_buffer.DataSize), MEM_RELEASE);
+  ::VirtualFree(m_read_buffer, 0, MEM_RELEASE);
   m_read_buffer = nullptr;
   for (auto i = m_rcu_buffer.Slots; i < m_rcu_buffer.Slots + m_rcu_ringbuffer.Slots; ++i) {
-    ::VirtualFree(shmem->slots_memory[i], GetSlotSize(m_rcu_ringbuffer.DataSize), MEM_RELEASE);
+    ::VirtualFree(shmem->slots_memory[i], 0, MEM_RELEASE);
     shmem->slots_memory[i] = nullptr;
   }
   for (auto i = 0; i < m_rcu_buffer.Slots; ++i) {
-    ::VirtualFree(shmem->slots_memory[i], GetSlotSize(m_rcu_buffer.DataSize), MEM_RELEASE);
+    ::VirtualFree(shmem->slots_memory[i], 0, MEM_RELEASE);
     shmem->slots_memory[i] = nullptr;
   }
-  ::VirtualFree(m_memory, GetSharedMemorySize(m_rcu_buffer.Slots + m_rcu_ringbuffer.Slots), MEM_RELEASE);
+  ::VirtualFree(m_memory, 0, MEM_RELEASE);
   m_memory = nullptr;
 
   return true;
