@@ -90,7 +90,16 @@ extern "C" {
   } g_exceptionHandlers;
 
   static LONG ExceptionHandler(_In_ _EXCEPTION_POINTERS *ExceptionInfo) {
-    (void)ExceptionInfo;
+    switch (ExceptionInfo->ExceptionRecord->ExceptionCode) {
+      case STATUS_ACCESS_VIOLATION:
+      case STATUS_ILLEGAL_INSTRUCTION:
+      case STATUS_STACK_OVERFLOW:
+      case STATUS_INTEGER_DIVIDE_BY_ZERO:
+      case STATUS_PRIVILEGED_INSTRUCTION:
+        break;
+      default:
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
 
     if (g_exceptionHandlers.mtx != NULL
         && ::WaitForSingleObject(g_exceptionHandlers.mtx, (unsigned int)-1) != 0)
@@ -576,18 +585,19 @@ bool KernelSharedMemory::ProcessEvents(long long int wait_time) {
 }
 
 bool KernelSharedMemory::ShutdownImmediately() {
-  if (!m_pep || !m_obj || m_chunks.size() < 1)
-    return false;
-
-  auto shmem = m_chunks[0].Get<struct shmem>();
-  if (!shmem)
-    return false;
-  InterlockedExchange(&shmem->opened_by_kernel, 0);
-  m_chunks.clear();
-
-  ::CloseProcess(&m_pep, &m_obj);
-  m_pep = nullptr;
-  m_obj = nullptr;
+  if (m_chunks.size() >= 1) {
+    while (m_chunks.size() > 1)
+      m_chunks.pop_back();
+    auto shmem = m_chunks[0].Get<struct shmem>();
+    if (shmem)
+      InterlockedExchange(&shmem->opened_by_kernel, 0);
+    m_chunks.clear();
+  }
+  if (m_pep || m_obj) {
+    ::CloseProcess(&m_pep, &m_obj);
+    m_pep = nullptr;
+    m_obj = nullptr;
+  }
 
   return true;
 }
