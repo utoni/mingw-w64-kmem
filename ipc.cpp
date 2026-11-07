@@ -345,10 +345,16 @@ bool UserSharedMemory::ReadRingbufferData(const DataReadCallback & read_callback
   if (!shmem)
     return false;
 
-  const auto write_index = InterlockedCompareExchange64(&shmem->rcu_ring.write_index, 0, 0);
+  const long long int write_index =
+      InterlockedCompareExchange64(&shmem->rcu_ring.write_index, 0, 0);
+  const long long int ring_slots = static_cast<long long int>(m_rcu_ringbuffer.Slots);
 
-  for (auto i = m_last_ringbuffer_read; i < write_index; ++i) {
-    const auto real_index = m_rcu_buffer.Slots + ((m_last_ringbuffer_read + i) % m_rcu_ringbuffer.Slots);
+  if (write_index - m_last_ringbuffer_read > ring_slots)
+    m_last_ringbuffer_read = write_index - ring_slots;
+
+  for (; m_last_ringbuffer_read < write_index; ++m_last_ringbuffer_read) {
+    const auto real_index =
+        m_rcu_buffer.Slots + static_cast<std::size_t>(m_last_ringbuffer_read % ring_slots);
     struct rcu_slot* slot = shmem->slots_memory[real_index];
     if (!slot)
       return false;
@@ -369,8 +375,6 @@ bool UserSharedMemory::ReadRingbufferData(const DataReadCallback & read_callback
       YieldProcessor();
       retries++;
     }
-
-    m_last_ringbuffer_read++;
   }
 
   return true;
